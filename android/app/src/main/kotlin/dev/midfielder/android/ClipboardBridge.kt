@@ -37,7 +37,8 @@ class ClipboardBridge(context: Context) {
             val mime = app.contentResolver.getType(uri)
             if (mime != null && mime.startsWith("image/")) return readImage(uri, mime, sensitive)
         }
-        val text = item.text?.toString() ?: item.coerceToText(app)?.toString()
+        // Only real text. coerceToText() would read a whole content URI into memory.
+        val text = item.text?.toString()
         if (text.isNullOrEmpty()) return null
         return ClipContent.Text(text, sensitive)
     }

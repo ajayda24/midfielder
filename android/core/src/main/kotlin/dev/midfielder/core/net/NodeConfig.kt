@@ -11,8 +11,11 @@ public data class NodeConfig(
     /** The dialer pings only after this much silence. Long on purpose: an idle radio is a sleeping radio. */
     val heartbeatIntervalMs: Long = 4 * 60_000L,
     val heartbeatTimeoutMs: Long = 20_000L,
-    /** The listener never pings; it drops a session that has been silent this long. */
-    val listenerIdleTimeoutMs: Long = 3 * 4 * 60_000L + 30_000L,
+    /**
+     * The listener never pings; it drops a session silent this long. Long on purpose: a phone in deep sleep
+     * can't ping, and dropping it would only cause a reconnect cycle. Dead sessions are replaced on reconnect.
+     */
+    val listenerIdleTimeoutMs: Long = 45 * 60_000L,
     val sendQueueCapacity: Int = 64,
     val maxConnections: Int = 16,
     val dataRetryAttempts: Int = 5,

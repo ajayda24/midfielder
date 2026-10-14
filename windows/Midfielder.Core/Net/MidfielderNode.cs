@@ -161,7 +161,9 @@ public sealed class MidfielderNode : IAsyncDisposable
                 if (first.BodyCase == Envelope.BodyOneofCase.Hello)
                 {
                     var remote = client.Client.RemoteEndPoint as IPEndPoint;
-                    var hp = new HostPort(remote?.Address.ToString() ?? "unknown", remote?.Port ?? 1);
+                    var ip = remote?.Address;
+                    if (ip is { IsIPv4MappedToIPv6: true }) ip = ip.MapToIPv4(); // "::ffff:192.168.1.5" -> "192.168.1.5"
+                    var hp = new HostPort(ip?.ToString() ?? "unknown", remote?.Port ?? 1);
                     var session = await AcceptControlAsync(client, ssl, peerFp, first.Hello, hp, handshake.Token).ConfigureAwait(false);
                     handshake.Dispose();
                     await session.Closed.ConfigureAwait(false);
@@ -472,9 +474,13 @@ public sealed class MidfielderNode : IAsyncDisposable
 
     private void StartOutgoing(PeerSession session, OutgoingTransfer t)
     {
-        var ct = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, t.Cancel.Token).Token;
+        // Disposed when this job ends: an undisposed linked source would leave a registration on the node's
+        // long-lived token for every transfer.
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, t.Cancel.Token);
+        var ct = linked.Token;
         t.Job = Task.Run(async () =>
         {
+            using var _ = linked;
             try
             {
                 var answer = await RequestAnswerAsync(session, t.Offer, ct).ConfigureAwait(false);

@@ -42,8 +42,11 @@ public sealed record NodeConfig
     /// <summary>The dialer pings only after this much silence: an idle radio is a sleeping radio.</summary>
     public long HeartbeatIntervalMs { get; init; } = 4 * 60_000;
     public long HeartbeatTimeoutMs { get; init; } = 20_000;
-    /// <summary>The listener never pings; it drops a session that has been silent this long.</summary>
-    public long ListenerIdleTimeoutMs { get; init; } = (3 * 4 * 60_000) + 30_000;
+    /// <summary>
+    /// The listener never pings; it drops a session silent this long. Long on purpose: a phone in deep sleep
+    /// can't ping, and dropping it would only cause a reconnect cycle. Dead sessions are replaced on reconnect.
+    /// </summary>
+    public long ListenerIdleTimeoutMs { get; init; } = 45 * 60_000;
     public int SendQueueCapacity { get; init; } = 64;
     public int MaxConnections { get; init; } = 16;
     public int DataRetryAttempts { get; init; } = 5;

@@ -31,6 +31,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Keeps the phone connected to its paired PC(s) without polling.
@@ -159,6 +160,7 @@ class ConnectionManager(
     private suspend fun discover(deviceId: String): HostPort? {
         val lock = wifi.createMulticastLock("midfielder-discovery").apply { setReferenceCounted(false) }
         val result = CompletableDeferred<HostPort?>()
+        val resolving = AtomicBoolean(false)
         val resolveListener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                 result.complete(null)
@@ -180,7 +182,8 @@ class ConnectionManager(
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
             override fun onServiceLost(info: NsdServiceInfo) = Unit
             override fun onServiceFound(info: NsdServiceInfo) {
-                if (info.serviceName.equals(deviceId, ignoreCase = true)) {
+                // Resolve once: a second resolve fails with ALREADY_ACTIVE and must not cancel the first.
+                if (info.serviceName.equals(deviceId, ignoreCase = true) && resolving.compareAndSet(false, true)) {
                     @Suppress("DEPRECATION")
                     runCatching { nsd.resolveService(info, resolveListener) }
                 }
