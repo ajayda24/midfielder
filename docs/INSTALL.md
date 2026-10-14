@@ -89,6 +89,16 @@ managers. Set Midfielder to **Unrestricted / No restrictions** and enable **Auto
 
 ## Troubleshooting
 
+* **"App not installed" on the phone**:
+  1. Settings → Apps: if any **Midfielder** is already listed (e.g. from an older build or the debug
+     download), uninstall it and install again. Builds up to CI run #3 were each signed with a different
+     key and can't update one another. Later builds share one key and update in place.
+  2. If Google Play Protect or the phone's own security scan (Realme/Oppo/OnePlus: Settings → Privacy &
+     security, "Pure mode" / "App installation security") is on, allow the install or turn the check off
+     for this install.
+  3. Still failing? Run `adb install -r app-release.apk` from the platform-tools folder (see step 4A). It
+     prints the exact reason, e.g. `Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE …]`.
+
 * **Phone says "Waiting for <PC>…"**: both devices must be on the same Wi-Fi. Guest networks and some
   public or office Wi-Fi block devices from seeing each other ("AP/client isolation"). A phone hotspot with
   the laptop connected to it works too. VPNs on either device can also block it.

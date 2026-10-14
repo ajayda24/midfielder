@@ -12,17 +12,34 @@ android {
         // Android 10: TLS 1.3 in the platform, and the version whose clipboard limits we design around.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Each CI build gets a higher versionCode, so a newer APK installs as an update over an older one.
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "0.1.$build"
+    }
+
+    // One fixed key for every build (debug and release). Android only installs an update over an existing app
+    // when the signatures match; a per-machine debug key changes on every CI run and makes updates fail with
+    // "App not installed". This key is for personal sideloading: anyone with the repo can sign with it, so use a
+    // private key (e.g. from CI secrets) before distributing builds to others.
+    signingConfigs {
+        create("sideload") {
+            storeFile = file("midfielder-sideload.jks")
+            storePassword = "midfielder-sideload"
+            keyAlias = "midfielder"
+            keyPassword = "midfielder-sideload"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("sideload")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Sideloaded APK: CI signs with the debug key unless a release keystore is configured.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("sideload")
         }
     }
 
