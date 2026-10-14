@@ -1,6 +1,7 @@
 package dev.midfielder.core
 
 import dev.midfielder.core.clip.ClipContent
+import dev.midfielder.core.clip.ClipResult
 import dev.midfielder.core.clip.ClipSync
 import dev.midfielder.core.clip.ClipboardHistory
 import dev.midfielder.proto.ClipboardItem
@@ -9,7 +10,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import okio.ByteString.Companion.toByteString
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -26,25 +27,36 @@ class ClipSyncTest {
         val pc = Rig(backgroundScope, "pc")
         val phone = Rig(backgroundScope, "phone")
 
-        assertTrue(pc.sync.onLocalChange(ClipContent.Text("hello")))
+        assertEquals(ClipResult.SENT, pc.sync.onLocalChange(ClipContent.Text("hello")))
         assertEquals(1, pc.sent.size)
-        assertTrue(phone.sync.onRemote(pc.sent.single()))
+        assertEquals(ClipResult.APPLIED, phone.sync.onRemote(pc.sent.single()))
         assertEquals("hello", (phone.applied.single() as ClipContent.Text).text)
 
         // Writing to the phone clipboard fires its change listener: that must not bounce back.
-        assertFalse(phone.sync.onLocalChange(ClipContent.Text("hello")))
+        assertNotEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("hello")))
         assertTrue(phone.sent.isEmpty())
 
         // The same text arriving again is ignored too.
-        assertFalse(phone.sync.onRemote(pc.sent.single()))
+        assertNotEquals(ClipResult.APPLIED, phone.sync.onRemote(pc.sent.single()))
+    }
+
+    @Test
+    fun `copying applied content again after another copy sends it`() = runTest(UnconfinedTestDispatcher()) {
+        val pc = Rig(backgroundScope, "pc")
+        val phone = Rig(backgroundScope, "phone")
+        pc.sync.onLocalChange(ClipContent.Text("from pc"))
+        assertEquals(ClipResult.APPLIED, phone.sync.onRemote(pc.sent.single()))
+        assertEquals(ClipResult.DUPLICATE, phone.sync.onLocalChange(ClipContent.Text("from pc")))
+        assertEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("typed on phone")))
+        assertEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("from pc")))
     }
 
     @Test
     fun `repeated local copies of the same content send once`() = runTest(UnconfinedTestDispatcher()) {
         val pc = Rig(backgroundScope, "pc")
-        assertTrue(pc.sync.onLocalChange(ClipContent.Text("a")))
-        assertFalse(pc.sync.onLocalChange(ClipContent.Text("a")))
-        assertTrue(pc.sync.onLocalChange(ClipContent.Text("b")))
+        assertEquals(ClipResult.SENT, pc.sync.onLocalChange(ClipContent.Text("a")))
+        assertNotEquals(ClipResult.SENT, pc.sync.onLocalChange(ClipContent.Text("a")))
+        assertEquals(ClipResult.SENT, pc.sync.onLocalChange(ClipContent.Text("b")))
         assertEquals(listOf("a", "b"), pc.sent.map { it.inline_data.utf8() })
     }
 
@@ -54,8 +66,8 @@ class ClipSyncTest {
         val phone = Rig(backgroundScope, "phone")
         pc.sync.onLocalChange(ClipContent.Text("real"))
         val item = pc.sent.single()
-        assertFalse(phone.sync.onRemote(item.copy(inline_data = "fake".toByteArray().toByteString(), size = 4)))
-        assertFalse(phone.sync.onRemote(item.copy(size = 999)))
+        assertNotEquals(ClipResult.APPLIED, phone.sync.onRemote(item.copy(inline_data = "fake".toByteArray().toByteString(), size = 4)))
+        assertNotEquals(ClipResult.APPLIED, phone.sync.onRemote(item.copy(size = 999)))
         assertTrue(phone.applied.isEmpty())
     }
 
@@ -67,8 +79,8 @@ class ClipSyncTest {
         phone.sync.onLocalChange(ClipContent.Text("newer on phone"))
 
         // Reconnect: both send their latest as catch-up.
-        assertFalse(phone.sync.onRemote(pc.sync.catchUpItem()!!))
-        assertTrue(pc.sync.onRemote(phone.sync.catchUpItem()!!))
+        assertNotEquals(ClipResult.APPLIED, phone.sync.onRemote(pc.sync.catchUpItem()!!))
+        assertEquals(ClipResult.APPLIED, pc.sync.onRemote(phone.sync.catchUpItem()!!))
         assertEquals("newer on phone", (pc.applied.single() as ClipContent.Text).text)
     }
 
@@ -77,7 +89,7 @@ class ClipSyncTest {
         val pc = Rig(backgroundScope, "pc")
         val phone = Rig(backgroundScope, "phone")
         pc.sync.onLocalChange(ClipContent.Text("hunter2", sensitive = true))
-        assertTrue(phone.sync.onRemote(pc.sent.single()))
+        assertEquals(ClipResult.APPLIED, phone.sync.onRemote(pc.sent.single()))
         assertEquals(0, pc.sync.history.size)
         assertEquals(0, phone.sync.history.size)
     }
@@ -88,8 +100,8 @@ class ClipSyncTest {
         val phone = Rig(backgroundScope, "phone")
         pc.sync.onLocalChange(ClipContent.Text("x"))
         phone.sync.enabled = false
-        assertFalse(phone.sync.onRemote(pc.sent.single()))
-        assertFalse(phone.sync.onLocalChange(ClipContent.Text("y")))
+        assertNotEquals(ClipResult.APPLIED, phone.sync.onRemote(pc.sent.single()))
+        assertNotEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("y")))
     }
 
     @Test

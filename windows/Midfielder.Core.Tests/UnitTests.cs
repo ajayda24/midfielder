@@ -112,13 +112,13 @@ public class ClipSyncTests
     {
         using var pc = new Rig("pc");
         using var phone = new Rig("phone");
-        Assert.True(pc.Sync.OnLocalChange(new TextClip("hello")));
+        Assert.Equal(ClipResult.Sent, pc.Sync.OnLocalChange(new TextClip("hello")));
         var item = pc.LastSent();
-        Assert.True(await phone.Sync.OnRemoteAsync(item));
+        Assert.Equal(ClipResult.Applied, await phone.Sync.OnRemoteAsync(item));
         Assert.Equal("hello", ((TextClip)phone.Applied.Single()).Text);
-        Assert.False(phone.Sync.OnLocalChange(new TextClip("hello")));
-        Assert.False(await phone.Sync.OnRemoteAsync(item));
-        Assert.False(pc.Sync.OnLocalChange(new TextClip("hello")));
+        Assert.NotEqual(ClipResult.Sent, phone.Sync.OnLocalChange(new TextClip("hello")));
+        Assert.NotEqual(ClipResult.Applied, await phone.Sync.OnRemoteAsync(item));
+        Assert.NotEqual(ClipResult.Sent, pc.Sync.OnLocalChange(new TextClip("hello")));
     }
 
     [Fact]
@@ -131,10 +131,22 @@ public class ClipSyncTests
         var tampered = item.Clone();
         tampered.InlineData = Google.Protobuf.ByteString.CopyFrom(Encoding.UTF8.GetBytes("bad"));
         tampered.Size = 3;
-        Assert.False(await phone.Sync.OnRemoteAsync(tampered));
+        Assert.NotEqual(ClipResult.Applied, await phone.Sync.OnRemoteAsync(tampered));
         phone.Sync.OnLocalChange(new TextClip("newer"));
-        Assert.False(await phone.Sync.OnRemoteAsync(pc.Sync.CatchUpItem()!));
-        Assert.True(await pc.Sync.OnRemoteAsync(phone.Sync.CatchUpItem()!));
+        Assert.NotEqual(ClipResult.Applied, await phone.Sync.OnRemoteAsync(pc.Sync.CatchUpItem()!));
+        Assert.Equal(ClipResult.Applied, await pc.Sync.OnRemoteAsync(phone.Sync.CatchUpItem()!));
+    }
+
+    [Fact]
+    public async Task CopyingAppliedContentAgainAfterAnotherCopySends()
+    {
+        using var pc = new Rig("pc");
+        using var phone = new Rig("phone");
+        pc.Sync.OnLocalChange(new TextClip("from pc"));
+        Assert.Equal(ClipResult.Applied, await phone.Sync.OnRemoteAsync(pc.LastSent()));
+        Assert.Equal(ClipResult.Duplicate, phone.Sync.OnLocalChange(new TextClip("from pc")));
+        Assert.Equal(ClipResult.Sent, phone.Sync.OnLocalChange(new TextClip("typed on phone")));
+        Assert.Equal(ClipResult.Sent, phone.Sync.OnLocalChange(new TextClip("from pc")));
     }
 
     [Fact]

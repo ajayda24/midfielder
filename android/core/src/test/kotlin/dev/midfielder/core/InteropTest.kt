@@ -1,5 +1,8 @@
 package dev.midfielder.core
 
+import dev.midfielder.core.clip.ClipContent
+import dev.midfielder.core.clip.ClipResult
+import dev.midfielder.core.clip.ClipSync
 import dev.midfielder.core.crypto.DeviceIdentity
 import dev.midfielder.core.crypto.PairingInvite
 import dev.midfielder.core.net.InMemoryTrustStore
@@ -10,14 +13,16 @@ import dev.midfielder.core.net.TransferResult
 import dev.midfielder.core.transfer.BytesFileSource
 import dev.midfielder.core.transfer.DirectoryFileSink
 import dev.midfielder.core.transfer.FileSink
-import dev.midfielder.proto.ClipKind
 import dev.midfielder.proto.ClipboardItem
 import dev.midfielder.proto.DeviceKind
 import dev.midfielder.proto.TransferOffer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import okio.ByteString.Companion.encodeUtf8
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -56,11 +61,12 @@ class InteropTest {
             }
         }
 
-        val clips = Channel<ClipboardItem>(Channel.UNLIMITED)
+        val applied = Channel<ClipContent>(Channel.UNLIMITED)
+        lateinit var phoneClip: ClipSync
         val finished = Channel<TransferResult>(Channel.UNLIMITED)
         val events = object : NodeEvents {
             override suspend fun onClipboard(from: PairedDevice, item: ClipboardItem) {
-                clips.send(item)
+                phoneClip.onRemote(item)
             }
 
             override suspend fun onTransferOffer(from: PairedDevice, offer: TransferOffer): List<FileSink> =
@@ -70,21 +76,27 @@ class InteropTest {
                 finished.trySend(result)
             }
         }
-        val phone = MidfielderNode(DeviceIdentity.generate(), "kotlin-phone", DeviceKind.DEVICE_KIND_ANDROID, InMemoryTrustStore(), events)
+        val phoneIdentity = DeviceIdentity.generate()
+        val phone = MidfielderNode(phoneIdentity, "kotlin-phone", DeviceKind.DEVICE_KIND_ANDROID, InMemoryTrustStore(), events)
+        val clipScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        phoneClip = ClipSync(phoneIdentity.deviceId, clipScope, { phone.broadcastClipboard(it) }, { c, _ -> applied.send(c) })
         try {
             val invite = PairingInvite.parse(expect("INVITE"))
             val session = runBlocking { withTimeout(20_000) { phone.pair(invite) } }
             assertEquals("cli-pc", session.peer.name)
             assertEquals("kotlin-phone", expect("PAIRED"))
 
-            // Clipboard: phone -> PC, PC echoes back.
-            val text = "héllo from kotlin 👋"
-            val bytes = text.encodeUtf8()
-            phone.broadcastClipboard(
-                ClipboardItem(kind = ClipKind.CLIP_KIND_TEXT, mime = "text/plain", inline_data = bytes, size = bytes.size.toLong(), content_sha256 = bytes.sha256()),
-            )
-            assertEquals(text, expect("CLIP"))
-            assertEquals("echo: $text", runBlocking { withTimeout(20_000) { clips.receive() } }.inline_data.utf8())
+            // Clipboard through the real ClipSync on both sides: phone -> PC, then the PC's echo back.
+            val text = "héllo from kotlin 👋\r\nsecond line"
+            assertEquals(ClipResult.SENT, phoneClip.onLocalChange(ClipContent.Text(text)))
+            assertEquals("APPLIED héllo from kotlin 👋\\r\\nsecond line", "APPLIED " + expect("APPLIED"))
+            assertEquals("Applied", expect("CLIP_RESULT"))
+            val echo = runBlocking { withTimeout(20_000) { applied.receive() } } as ClipContent.Text
+            assertEquals("echo: $text", echo.text)
+
+            // A sensitive item (password manager) still syncs, flagged.
+            assertEquals(ClipResult.SENT, phoneClip.onLocalChange(ClipContent.Text("hunter2", sensitive = true)))
+            assertEquals("hunter2 [sensitive]", expect("APPLIED"))
 
             // Files: phone -> PC (dialer sends), then PC sends it back (listener sends).
             val payload = ByteArray(1_500_000).also { Random(7).nextBytes(it) }
@@ -95,6 +107,7 @@ class InteropTest {
             assertEquals("back-interop.bin", Path.of(back.locations.single()).fileName.toString())
             assertArrayEquals(payload, Files.readAllBytes(Path.of(back.locations.single())))
         } finally {
+            clipScope.cancel()
             phone.close()
             process.outputStream.close()
             if (!process.waitFor(5, TimeUnit.SECONDS)) process.destroyForcibly()

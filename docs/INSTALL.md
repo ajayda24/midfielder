@@ -65,6 +65,12 @@ Then choose **one** way to detect copies:
    adb shell pm grant dev.midfielder android.permission.READ_LOGS
    ```
    The first command should list your phone. The second prints nothing when it succeeds.
+
+   **Realme, Oppo, OnePlus (ColorOS / Realme UI):** if it fails with
+   `Neither user 2000 nor current process has android.permission.GRANT_RUNTIME_PERMISSIONS`, go to
+   Settings → Additional settings → Developer options, turn on **Disable permission monitoring**, unplug and
+   replug the cable, and run it again. **Xiaomi / Redmi / POCO:** turn on **USB debugging (Security
+   settings)** in Developer options instead.
 5. On the phone: Settings → Apps → Midfielder → **Force stop**, then open Midfielder again. The checklist
    shows ✓ for *Detect copies silently*. You can turn USB debugging off again; the permission stays (until
    you uninstall the app).
@@ -82,6 +88,7 @@ managers. Set Midfielder to **Unrestricted / No restrictions** and enable **Auto
 |---|---|
 | Copy text on the laptop, paste on the phone | same text |
 | Take a screenshot on the laptop (Win+Shift+S), paste in a chat app on the phone | the image |
+| In File Explorer, right-click a photo → **Copy**, paste in a chat app on the phone | the photo |
 | Copy text on the phone, press Ctrl+V on the laptop | same text, within about a second |
 | On the phone, Share a photo → **Send to PC** | appears in `Downloads\Midfielder` with a notification |
 | On the laptop, right-click a file → **Send to → Midfielder (phone)** | appears in the phone's `Download/Midfielder` |
@@ -109,6 +116,9 @@ managers. Set Midfielder to **Unrestricted / No restrictions** and enable **Auto
 * **Phone → PC copying doesn't arrive**: open Midfielder and check the line *Phone → PC clipboard:*. If it
   says "Tap Send clipboard", step 4 isn't finished. As a fallback, use the notification button or the
   Quick Settings tile.
+* **Something doesn't sync — send me the logs**: on the PC, tray → **Open log** (`midfielder.log`). On the
+  phone, the **Recent activity** section at the bottom of the Midfielder screen (a screenshot is fine), or
+  `adb logcat -s Midfielder`. They contain events, kinds and sizes, never what you copied.
 * **Start over**: tray → **Forget paired devices**, and on the phone → **Forget paired PC**, then pair
   again.
 

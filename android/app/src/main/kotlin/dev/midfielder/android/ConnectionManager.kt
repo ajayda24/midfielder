@@ -146,7 +146,7 @@ class ConnectionManager(
         for (address in candidates) {
             if (tryConnect(device, address)) return true
         }
-        val found = discover(device.deviceId) ?: return false
+        val found = discover(device.deviceId) ?: return false.also { EventLog.add("${device.name} not found on this network") }
         return tryConnect(device, found)
     }
 
@@ -154,7 +154,10 @@ class ConnectionManager(
         node.connect(device, address)
         trust.put(device.copy(lastAddress = address.toString()))
         true
-    }.getOrDefault(false)
+    }.getOrElse {
+        EventLog.add("Could not reach ${device.name} at $address: ${it.message ?: it.javaClass.simpleName}")
+        false
+    }
 
     /** One short mDNS burst for the PC whose service instance name is its device id. */
     private suspend fun discover(deviceId: String): HostPort? {

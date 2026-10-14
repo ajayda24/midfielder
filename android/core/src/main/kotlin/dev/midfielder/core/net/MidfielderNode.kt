@@ -358,7 +358,13 @@ public class MidfielderNode(
 
     private suspend fun dispatch(session: PeerSession, env: Envelope) {
         when {
-            env.clipboard != null -> events.onClipboard(session.peer, env.clipboard)
+            env.clipboard != null -> try {
+                events.onClipboard(session.peer, env.clipboard)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A failure applying one clipboard item must never take the whole connection down.
+            }
             env.transfer_offer != null -> {
                 val offer = env.transfer_offer
                 scope.launch { handleOffer(session, offer) }
@@ -369,10 +375,15 @@ public class MidfielderNode(
         }
     }
 
-    /** Sends a clipboard item to every connected peer; a slow peer never blocks the others. */
-    public fun broadcastClipboard(item: ClipboardItem) {
+    /**
+     * Sends a clipboard item to every connected peer; a slow peer never blocks the others.
+     * Returns how many peers it was queued for.
+     */
+    public fun broadcastClipboard(item: ClipboardItem): Int {
         val env = Envelope(clipboard = item)
-        for (s in sessions.values) if (s.isOpen) s.trySend(env)
+        var queued = 0
+        for (s in sessions.values) if (s.isOpen && s.trySend(env)) queued++
+        return queued
     }
 
     // ---------------------------------------------------------------------------------------------

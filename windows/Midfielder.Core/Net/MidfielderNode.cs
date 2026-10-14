@@ -348,7 +348,14 @@ public sealed class MidfielderNode : IAsyncDisposable
         switch (env.BodyCase)
         {
             case Envelope.BodyOneofCase.Clipboard:
-                await _events.OnClipboardAsync(session.Peer, env.Clipboard).ConfigureAwait(false);
+                try
+                {
+                    await _events.OnClipboardAsync(session.Peer, env.Clipboard).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // A failure applying one clipboard item must never take the whole connection down.
+                }
                 break;
             case Envelope.BodyOneofCase.TransferOffer:
                 var offer = env.TransferOffer;
@@ -365,14 +372,19 @@ public sealed class MidfielderNode : IAsyncDisposable
         }
     }
 
-    /// <summary>Sends a clipboard item to every connected peer; a slow peer never blocks the others.</summary>
-    public void BroadcastClipboard(ClipboardItem item)
+    /// <summary>
+    /// Sends a clipboard item to every connected peer; a slow peer never blocks the others.
+    /// Returns how many peers it was queued for.
+    /// </summary>
+    public int BroadcastClipboard(ClipboardItem item)
     {
         var env = new Envelope { Clipboard = item };
+        int queued = 0;
         foreach (var s in _sessions.Values)
         {
-            if (s.IsOpen) s.TrySend(env);
+            if (s.IsOpen && s.TrySend(env)) queued++;
         }
+        return queued;
     }
 
     // ---------------------------------------------------------------------------------------------

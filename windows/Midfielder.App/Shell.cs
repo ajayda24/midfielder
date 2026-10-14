@@ -50,6 +50,12 @@ internal static class Shell
         using var _ = Process.Start(new ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
     }
 
+    public static void OpenFile(string path)
+    {
+        if (!File.Exists(path)) return;
+        using var _ = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    }
+
     public static void Reveal(string file)
     {
         using var _ = Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{file}\"") { UseShellExecute = true });

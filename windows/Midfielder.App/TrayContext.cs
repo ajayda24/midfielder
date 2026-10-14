@@ -21,6 +21,7 @@ internal sealed class TrayContext : ApplicationContext
     private const int ProgressUpdateMs = 500;
 
     private readonly SynchronizationContext _ui;
+    private readonly Control _uiInvoker = new();
     private readonly AppStorage _storage = new();
     private readonly Settings _settings;
     private readonly DeviceIdentity _identity;
@@ -38,12 +39,18 @@ internal sealed class TrayContext : ApplicationContext
     private readonly List<string> _pendingSends = [];
     private readonly int _port;
     private PairingForm? _pairingForm;
+    private readonly object _applyGate = new();
+    private Task _applyChain = Task.CompletedTask;
     private int _activeTransfers;
     private long _lastProgressUiMs;
 
     public TrayContext(string[] args)
     {
-        _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        // A control created (handle and all) on this thread: BeginInvoke on it always runs on the UI thread.
+        _uiInvoker.CreateControl();
+        _ = _uiInvoker.Handle;
+        _ui = new InvokerContext(_uiInvoker);
+        AppLog.Info($"Midfielder starting ({Environment.OSVersion})");
         _settings = _storage.LoadSettings();
         _identity = _storage.LoadOrCreateIdentity();
         _trust = new PersistentTrustStore(_storage);
@@ -58,7 +65,15 @@ internal sealed class TrayContext : ApplicationContext
         {
             _port = _node.StartListening(0); // preferred port busy; mDNS tells the phone where we are
         }
-        _discovery.Advertise(_identity.DeviceId, Environment.MachineName, _port);
+        AppLog.Info($"Listening on port {_port}; device id {_identity.DeviceId}; {_trust.All().Count} paired device(s)");
+        try
+        {
+            _discovery.Advertise(_identity.DeviceId, Environment.MachineName, _port);
+        }
+        catch (Exception e)
+        {
+            AppLog.Error("mDNS advertising failed (phone will use its last known address)", e);
+        }
 
         _tray = new NotifyIcon
         {
@@ -119,6 +134,7 @@ internal sealed class TrayContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Send files to phone…", null, (_, _) => PickAndSendFiles());
         menu.Items.Add("Open received files", null, (_, _) => Shell.OpenFolder(_settings.ReceiveFolder));
+        menu.Items.Add("Open log", null, (_, _) => Shell.OpenFile(AppLog.Path));
         menu.Items.Add(sync);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Pair a phone…", null, (_, _) => ShowPairing());
@@ -165,6 +181,7 @@ internal sealed class TrayContext : ApplicationContext
         {
             _node.ClosePairing();
             _pairingForm?.Dispose();
+            _uiInvoker.Dispose();
             _pairingForm = null;
         };
         _pairingForm.Show();
@@ -197,8 +214,9 @@ internal sealed class TrayContext : ApplicationContext
         {
             content = WindowsClipboard.Read();
         }
-        catch (Exception e) when (e is System.Runtime.InteropServices.ExternalException or ArgumentException or OutOfMemoryException)
+        catch (Exception e) when (e is System.Runtime.InteropServices.ExternalException or ArgumentException or OutOfMemoryException or IOException)
         {
+            AppLog.Error("Could not read the local clipboard", e);
             return; // unreadable or oversized content: skip it rather than crash
         }
         if (content is null) return;
@@ -206,15 +224,19 @@ internal sealed class TrayContext : ApplicationContext
         if (!ClipSync.IsInlineSize(content))
         {
             // Big screenshots go as a clipboard-purpose transfer instead of one huge frame.
+            AppLog.Info($"Local copy: {Describe(content)} (sending as a transfer)");
             if (content is ImageClip big) SendClipboardImage(big);
             return;
         }
-        if (_clipSync.OnLocalChange(content) && _node.ConnectedPeers.Count == 0) KnockPhones();
+        var result = _clipSync.OnLocalChange(content);
+        AppLog.Info($"Local copy: {Describe(content)} -> {result}");
+        if (result == ClipResult.Sent && _node.ConnectedPeers.Count == 0) KnockPhones();
     }
 
     private ValueTask BroadcastAsync(ClipboardItem item)
     {
-        _node.BroadcastClipboard(item);
+        int peers = _node.BroadcastClipboard(item);
+        AppLog.Info($"Clipboard sent to {peers} device(s)");
         return ValueTask.CompletedTask;
     }
 
@@ -224,10 +246,12 @@ internal sealed class TrayContext : ApplicationContext
         {
             WindowsClipboard.Write(content);
             _monitor.IgnoreCurrentSequence();
+            AppLog.Info($"Applied to Windows clipboard: {Describe(content)}");
         }
-        catch (Exception e) when (e is System.Runtime.InteropServices.ExternalException or ArgumentException)
+        catch (Exception e)
         {
-            // Clipboard locked by another app for too long; the next copy will sync.
+            // Never let one clipboard write take anything else down; the next copy will sync.
+            AppLog.Error("Writing the Windows clipboard failed", e);
         }
     });
 
@@ -329,6 +353,7 @@ internal sealed class TrayContext : ApplicationContext
 
     private void OnTransferFinished(string transferId, PairedDevice from, TransferResult result)
     {
+        AppLog.Info($"Transfer {transferId[..8]} from {from.Name}: {result}");
         if (_clipboardTransfers.TryRemove(transferId, out _))
         {
             if (result is TransferResult.Completed { Locations.Count: 1 } done)
@@ -410,6 +435,13 @@ internal sealed class TrayContext : ApplicationContext
         }
     }
 
+    private static string Describe(ClipContent c) => c switch
+    {
+        TextClip t => $"text, {t.Text.Length} chars{(c.Sensitive ? ", sensitive" : "")}",
+        ImageClip i => $"image, {i.Bytes.Length / 1024} KB",
+        _ => c.GetType().Name,
+    };
+
     private static string Describe(TransferResult r) => r switch
     {
         TransferResult.Failed f => f.Reason,
@@ -423,6 +455,7 @@ internal sealed class TrayContext : ApplicationContext
 
     private void OnPeerConnected(PeerSession session)
     {
+        AppLog.Info($"Connected: {session.Peer.Name} from {session.Remote}");
         _peerHosts[session.Peer.Fingerprint] = session.Remote.Host;
         if (_clipSync.CatchUpItem() is { } latest) session.TrySend(new Envelope { Clipboard = latest });
         _ui.Post(_ =>
@@ -510,6 +543,22 @@ internal sealed class TrayContext : ApplicationContext
         base.Dispose(disposing);
     }
 
+    /// <summary>Posts to the UI thread through a control that is guaranteed to have a window handle.</summary>
+    private sealed class InvokerContext(Control control) : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            if (!control.IsDisposed) control.BeginInvoke(d, state);
+        }
+
+        public override void Send(SendOrPostCallback d, object? state)
+        {
+            if (!control.IsDisposed) control.Invoke(d, state);
+        }
+
+        public override SynchronizationContext CreateCopy() => this;
+    }
+
     /// <summary>Node callbacks (thread-pool threads) forwarded to the context.</summary>
     private sealed class Events(TrayContext app) : INodeEvents
     {
@@ -517,10 +566,36 @@ internal sealed class TrayContext : ApplicationContext
 
         public void OnPeerConnected(PeerSession session) => app.OnPeerConnected(session);
 
-        public void OnPeerDisconnected(PairedDevice device, Exception? cause) => app._ui.Post(_ => app.UpdateStatus(), null);
+        public void OnPeerDisconnected(PairedDevice device, Exception? cause)
+        {
+            AppLog.Info($"Disconnected: {device.Name} ({cause?.Message ?? "closed"})");
+            app._ui.Post(_ => app.UpdateStatus(), null);
+        }
 
-        public async ValueTask OnClipboardAsync(PairedDevice from, ClipboardItem item) =>
-            await app._clipSync.OnRemoteAsync(item).ConfigureAwait(false);
+        /// <summary>
+        /// Applying needs the UI thread. Run it on its own so the connection keeps reading even if the clipboard
+        /// is busy; applies stay in arrival order.
+        /// </summary>
+        public ValueTask OnClipboardAsync(PairedDevice from, ClipboardItem item)
+        {
+            AppLog.Info($"Clipboard received from {from.Name}: {item.Kind}, {item.Size} bytes{(item.CatchUp ? ", catch-up" : "")}");
+            lock (app._applyGate)
+            {
+                app._applyChain = app._applyChain.ContinueWith(async _ =>
+                {
+                    try
+                    {
+                        var result = await app._clipSync.OnRemoteAsync(item).ConfigureAwait(false);
+                        AppLog.Info($"Clipboard from {from.Name} -> {result}");
+                    }
+                    catch (Exception e)
+                    {
+                        AppLog.Error("Handling a received clipboard item failed", e);
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
+            }
+            return ValueTask.CompletedTask;
+        }
 
         public async ValueTask<IReadOnlyList<IFileSink>?> OnTransferOfferAsync(PairedDevice from, TransferOffer offer, CancellationToken ct) =>
             await app.DecideOfferAsync(from, offer).ConfigureAwait(false);

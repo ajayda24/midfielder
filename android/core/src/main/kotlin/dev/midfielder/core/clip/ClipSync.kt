@@ -10,6 +10,9 @@ import kotlinx.coroutines.launch
 import okio.ByteString.Companion.toByteString
 import java.security.SecureRandom
 
+/** Outcome of handing an item to [ClipSync]; apps log it so a lost copy can be traced. */
+public enum class ClipResult { SENT, APPLIED, DUPLICATE, OLDER, DISABLED, TOO_LARGE, INVALID }
+
 /**
  * Platform-neutral clipboard sync logic.
  *
@@ -48,46 +51,52 @@ public class ClipSync(
         }
     }
 
-    /** Call from the platform clipboard monitor. Returns true if the content will be sent. */
-    public fun onLocalChange(content: ClipContent): Boolean {
-        if (!enabled) return false
-        if (content is ClipContent.Text && content.bytes.size > Limits.MAX_CLIP_TEXT_BYTES) return false
-        if (content.bytes.isEmpty()) return false
+    /** Call from the platform clipboard monitor. [ClipResult.SENT] means it was queued for every peer. */
+    public fun onLocalChange(content: ClipContent): ClipResult {
+        if (!enabled) return ClipResult.DISABLED
+        if (content.bytes.isEmpty()) return ClipResult.INVALID
+        if (content is ClipContent.Text && content.bytes.size > Limits.MAX_CLIP_TEXT_BYTES) return ClipResult.TOO_LARGE
         // Larger images go through a TRANSFER_PURPOSE_CLIPBOARD file transfer instead (see isInlineSize).
-        if (!isInlineSize(content)) return false
+        if (!isInlineSize(content)) return ClipResult.TOO_LARGE
         val hash = content.sha256
         val item: ClipboardItem
         synchronized(lock) {
             val applied = lastAppliedHash
-            if (applied != null && Hashes.constantTimeEquals(applied, hash)) return false // our own echo
+            if (applied != null) {
+                if (Hashes.constantTimeEquals(applied, hash)) return ClipResult.DUPLICATE // our own echo
+                // The user copied something else since: copying the applied content again later is a real copy.
+                lastAppliedHash = null
+            }
             val current = latest
-            if (current != null && Hashes.constantTimeEquals(current.content_sha256.toByteArray(), hash)) return false
+            if (current != null && Hashes.constantTimeEquals(current.content_sha256.toByteArray(), hash)) {
+                return ClipResult.DUPLICATE
+            }
             item = toItem(content)
             latest = item
         }
         history.add(ClipboardHistory.Entry(content, localDeviceId, item.created_at_ms))
         outgoing.trySend(item)
-        return true
+        return ClipResult.SENT
     }
 
-    /** Call when a peer sends a ClipboardItem. Returns true if it was applied locally. */
-    public suspend fun onRemote(item: ClipboardItem): Boolean {
-        if (!enabled) return false
-        val content = fromItem(item) ?: return false
+    /** Call when a peer sends a ClipboardItem. [ClipResult.APPLIED] means it is now on the local clipboard. */
+    public suspend fun onRemote(item: ClipboardItem): ClipResult {
+        if (!enabled) return ClipResult.DISABLED
+        val content = fromItem(item) ?: return ClipResult.INVALID
         val hash = content.sha256
-        if (!Hashes.constantTimeEquals(hash, item.content_sha256.toByteArray())) return false
+        if (!Hashes.constantTimeEquals(hash, item.content_sha256.toByteArray())) return ClipResult.INVALID
         synchronized(lock) {
             val current = latest
             if (current != null) {
-                if (Hashes.constantTimeEquals(current.content_sha256.toByteArray(), hash)) return false
-                if (item.catch_up && item.created_at_ms <= current.created_at_ms) return false
+                if (Hashes.constantTimeEquals(current.content_sha256.toByteArray(), hash)) return ClipResult.DUPLICATE
+                if (item.catch_up && item.created_at_ms <= current.created_at_ms) return ClipResult.OLDER
             }
             latest = item.copy(catch_up = false)
             lastAppliedHash = hash
         }
         history.add(ClipboardHistory.Entry(content, item.origin_device_id, item.created_at_ms))
         apply(content, item)
-        return true
+        return ClipResult.APPLIED
     }
 
     /** Whether [content] fits in a ClipboardItem; larger images must be sent as a clipboard transfer. */

@@ -1,6 +1,5 @@
 using System.Net;
-using System.Text;
-using Google.Protobuf;
+using Midfielder.Core.Clip;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Net;
 using Midfielder.Core.Transfer;
@@ -28,6 +27,16 @@ using var identity = DeviceIdentity.Generate();
 var events = new CliEvents(dir);
 await using var node = new MidfielderNode(identity, "cli-pc", DeviceKind.Windows, new InMemoryTrustStore(), events);
 events.Node = node;
+// The same ClipSync the tray app uses; "applying" prints the text (newlines escaped) instead of touching an OS clipboard.
+using var clipSync = new ClipSync(identity.DeviceId,
+    item => { node.BroadcastClipboard(item); return ValueTask.CompletedTask; },
+    (content, item) =>
+    {
+        string shown = content is TextClip t ? t.Text.Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal) : $"<image {content.Bytes.Length} bytes>";
+        Console.WriteLine($"APPLIED {shown}{(content.Sensitive ? " [sensitive]" : "")}");
+        return ValueTask.CompletedTask;
+    });
+events.ClipSync = clipSync;
 int actualPort = node.StartListening(port, bind);
 var invite = node.OpenPairing([new HostPort(bind.ToString(), actualPort)]);
 Console.WriteLine($"INVITE {invite.ToUri()}");
@@ -44,21 +53,17 @@ internal sealed class CliEvents(string dir) : INodeEvents
 
     public void OnPeerConnected(PeerSession session) => Console.WriteLine($"CONNECTED {session.Peer.Name}");
 
-    public ValueTask OnClipboardAsync(PairedDevice from, ClipboardItem item)
+    public ClipSync? ClipSync { get; set; }
+
+    public async ValueTask OnClipboardAsync(PairedDevice from, ClipboardItem item)
     {
-        string text = item.InlineData.ToStringUtf8();
-        Console.WriteLine($"CLIP {text}");
-        if (!text.StartsWith("echo: ", StringComparison.Ordinal))
+        var result = await ClipSync!.OnRemoteAsync(item);
+        Console.WriteLine($"CLIP_RESULT {result}");
+        if (result == ClipResult.Applied && item.Kind == ClipKind.Text)
         {
-            byte[] bytes = Encoding.UTF8.GetBytes("echo: " + text);
-            Node?.BroadcastClipboard(new ClipboardItem
-            {
-                Kind = ClipKind.Text, Mime = "text/plain", InlineData = ByteString.CopyFrom(bytes), Size = (ulong)bytes.Length,
-                ContentSha256 = ByteString.CopyFrom(System.Security.Cryptography.SHA256.HashData(bytes)),
-                CreatedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            });
+            string text = item.InlineData.ToStringUtf8();
+            if (!text.StartsWith("echo: ", StringComparison.Ordinal)) ClipSync.OnLocalChange(new TextClip("echo: " + text));
         }
-        return ValueTask.CompletedTask;
     }
 
     public ValueTask<IReadOnlyList<IFileSink>?> OnTransferOfferAsync(PairedDevice from, TransferOffer offer, CancellationToken ct) =>

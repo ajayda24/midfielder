@@ -38,6 +38,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var capture: TextView
     private lateinit var checklist: LinearLayout
+    private lateinit var activity: TextView
+    private var activityJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,6 +57,10 @@ class MainActivity : Activity() {
         super.onResume()
         SyncEngine.current?.uiInForeground = true
         refreshChecklist()
+        activityJob?.cancel()
+        activityJob = ui.launch {
+            EventLog.lines.collect { lines -> activity.text = lines.take(15).joinToString("\n").ifEmpty { "Nothing yet" } }
+        }
         statusJob?.cancel()
         statusJob = ui.launch {
             var engine = SyncEngine.current
@@ -73,13 +79,14 @@ class MainActivity : Activity() {
     override fun onPause() {
         SyncEngine.current?.uiInForeground = false
         statusJob?.cancel()
+        activityJob?.cancel()
         super.onPause()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // We have focus, so reading is allowed: pick up anything copied while we were away.
-        if (hasFocus) SyncEngine.current?.let { e -> runCatching { ClipboardBridge(this).read() }.getOrNull()?.let(e::onLocalClipboard) }
+        if (hasFocus) SyncEngine.current?.let { e -> runCatching { ClipboardBridge(this).read() }.getOrNull()?.let { e.onLocalClipboard(it) } }
     }
 
     override fun onDestroy() {
@@ -101,13 +108,16 @@ class MainActivity : Activity() {
         root.addView(section("Pair & send"))
         root.addView(button("Pair with PC (scan QR code)") { startScan() })
         root.addView(button("Send clipboard to PC now") {
-            val content = ClipboardBridge(this).read()
             val engine = SyncEngine.current
-            if (content != null && engine != null) {
-                engine.onLocalClipboard(content)
-                toast("Sent")
-            } else {
-                toast("Nothing to send")
+            val content = runCatching { ClipboardBridge(this).read() }
+                .onFailure { EventLog.error("Reading the clipboard failed", it) }
+                .getOrNull()
+            when {
+                engine == null -> toast("Midfielder is still starting, try again")
+                content == null -> toast("The clipboard is empty, or Android didn't let Midfielder read it").also {
+                    EventLog.add("Manual send: clipboard empty or unreadable")
+                }
+                else -> toast(engine.onLocalClipboard(content))
             }
         })
         root.addView(button("Send files to PC…") {
@@ -121,6 +131,9 @@ class MainActivity : Activity() {
         root.addView(section("Make it automatic (one-time setup)"))
         checklist = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(checklist)
+
+        root.addView(section("Recent activity"))
+        activity = text("", 12f).also { root.addView(it) }
 
         root.addView(section("Settings"))
         val storage = AppStorage(this)

@@ -28,8 +28,10 @@ class ClipboardReaderActivity : Activity() {
         if (!hasFocus || done) return
         val engine = SyncEngine.current
         if (engine != null) {
-            val content = runCatching { ClipboardBridge(this).read() }.getOrNull()
-            if (content != null) engine.onLocalClipboard(content)
+            val content = runCatching { ClipboardBridge(this).read() }
+                .onFailure { EventLog.error("Reading the clipboard failed", it) }
+                .getOrNull()
+            if (content != null) engine.onLocalClipboard(content) else EventLog.add("Clipboard is empty or unreadable")
         } else {
             SyncService.start(this)
         }

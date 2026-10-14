@@ -9,6 +9,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import dev.midfielder.core.clip.ClipContent
+import dev.midfielder.core.clip.ClipResult
 import dev.midfielder.core.clip.ClipSync
 import dev.midfielder.core.clip.ClipboardHistory
 import dev.midfielder.core.crypto.PairingInvite
@@ -79,7 +80,13 @@ class SyncEngine(context: Context) : Closeable {
         }
 
         override suspend fun onClipboard(from: PairedDevice, item: ClipboardItem) {
-            clipSync.onRemote(item)
+            val result = try {
+                clipSync.onRemote(item)
+            } catch (e: Exception) {
+                EventLog.error("Applying clipboard from ${from.name} failed", e)
+                return
+            }
+            EventLog.add("Clipboard from ${from.name}: ${item.kind.name.removePrefix("CLIP_KIND_").lowercase()}, ${item.size} bytes -> $result")
         }
 
         override suspend fun onTransferOffer(from: PairedDevice, offer: TransferOffer): List<FileSink>? {
@@ -125,13 +132,16 @@ class SyncEngine(context: Context) : Closeable {
 
     val clipSync: ClipSync = ClipSync(
         identity.deviceId, scope,
-        broadcast = { node.broadcastClipboard(it) },
+        broadcast = { EventLog.add("Clipboard sent to ${node.broadcastClipboard(it)} PC(s)") },
         apply = { content, _ -> clipboard.write(content) },
         history = ClipboardHistory(maxItems = 50, maxTotalBytes = 8L * 1024 * 1024),
     ).apply { enabled = storage.syncClipboard }
 
     private val connections: ConnectionManager = ConnectionManager(app, node, storage.trustStore, scope)
-    private val triggers: CaptureTriggers = CaptureTriggers(app, scope) { requestClipboardRead() }
+    private val triggers: CaptureTriggers = CaptureTriggers(app, scope) { source ->
+        EventLog.add("Copy detected ($source)")
+        requestClipboardRead()
+    }
 
     val captureMode: String
         get() = when {
@@ -180,7 +190,10 @@ class SyncEngine(context: Context) : Closeable {
             return
         }
         val canStartFromBackground = Settings.canDrawOverlays(app) || isAccessibilityOn()
-        if (!canStartFromBackground) return
+        if (!canStartFromBackground) {
+            EventLog.add("Can't read the clipboard in the background: allow \"Display over other apps\"")
+            return
+        }
         runCatching {
             app.startActivity(
                 Intent(app, ClipboardReaderActivity::class.java).addFlags(
@@ -190,16 +203,34 @@ class SyncEngine(context: Context) : Closeable {
         }
     }
 
-    /** Called by the reader activity, the share sheet and the UI with fresh clipboard content. */
-    fun onLocalClipboard(content: ClipContent) {
-        if (clipSync.isInlineSize(content)) {
-            if (clipSync.onLocalChange(content) && node.connectedPeers.value.isEmpty()) connections.kick("clipboard")
-            return
+    /**
+     * Called by the reader activity, the share sheet and the UI with fresh clipboard content.
+     * Returns a short, user-facing description of what happened.
+     */
+    fun onLocalClipboard(content: ClipContent): String {
+        val what = describe(content)
+        val peers = node.connectedPeers.value
+        if (!clipSync.isInlineSize(content)) {
+            if (content !is ClipContent.Image) return "Too large to sync".also { EventLog.add("Local copy: $what -> too large") }
+            EventLog.add("Local copy: $what -> sending as a transfer")
+            sendToPcs(listOf(BytesFileSource("clipboard.png", content.png, "image/png")), TransferPurpose.TRANSFER_PURPOSE_CLIPBOARD)
+            return if (peers.isEmpty()) "PC not connected" else "Sending image to ${peers.first().name}"
         }
-        if (content is ClipContent.Image) {
-            val source = BytesFileSource("clipboard.png", content.png, "image/png")
-            sendToPcs(listOf(source), TransferPurpose.TRANSFER_PURPOSE_CLIPBOARD)
+        val result = clipSync.onLocalChange(content)
+        EventLog.add("Local copy: $what -> $result")
+        if (result == ClipResult.SENT && peers.isEmpty()) connections.kick("clipboard")
+        return when {
+            result == ClipResult.DISABLED -> "Clipboard sync is turned off"
+            result == ClipResult.DUPLICATE -> "Already sent (nothing new on the clipboard)"
+            result != ClipResult.SENT -> "Couldn't send ($result)"
+            peers.isEmpty() -> "PC not connected (will send when it reconnects)"
+            else -> "Sent to ${peers.joinToString { it.name }}"
         }
+    }
+
+    private fun describe(c: ClipContent): String = when (c) {
+        is ClipContent.Text -> "text, ${c.text.length} chars${if (c.sensitive) ", sensitive" else ""}"
+        is ClipContent.Image -> "image, ${c.png.size / 1024} KB"
     }
 
     fun sendUris(uris: List<Uri>) {
@@ -243,6 +274,7 @@ class SyncEngine(context: Context) : Closeable {
     }
 
     private fun refreshStatus(event: String) {
+        EventLog.add(event)
         _status.value = Status(
             connected = node.connectedPeers.value.map { it.name },
             paired = storage.trustStore.all().map { it.name },

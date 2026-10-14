@@ -6,6 +6,9 @@ using Midfielder.Protocol;
 
 namespace Midfielder.Core.Clip;
 
+/// <summary>Outcome of handing an item to <see cref="ClipSync"/>; apps log it so a lost copy can be traced.</summary>
+public enum ClipResult { Sent, Applied, Duplicate, Older, Disabled, TooLarge, Invalid }
+
 /// <summary>
 /// Platform-neutral clipboard sync logic (same behavior as the Kotlin ClipSync): conflated sending, echo
 /// prevention by content hash, and catch-up on reconnect (applied only if newer).
@@ -41,41 +44,48 @@ public sealed class ClipSync : IDisposable
 
     public static bool IsInlineSize(ClipContent content) => content is not null && content.Bytes.Length <= Limits.MaxInlineClipBytes;
 
-    /// <summary>Call from the clipboard monitor. Returns true if the content will be sent.</summary>
-    public bool OnLocalChange(ClipContent content)
+    /// <summary>Call from the clipboard monitor. <see cref="ClipResult.Sent"/> means it was queued for every peer.</summary>
+    public ClipResult OnLocalChange(ClipContent content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        if (!Enabled || content.Bytes.IsEmpty || !IsInlineSize(content)) return false;
-        if (content is TextClip && content.Bytes.Length > Limits.MaxClipTextBytes) return false;
+        if (!Enabled) return ClipResult.Disabled;
+        if (content.Bytes.IsEmpty) return ClipResult.Invalid;
+        if (!IsInlineSize(content)) return ClipResult.TooLarge;
+        if (content is TextClip && content.Bytes.Length > Limits.MaxClipTextBytes) return ClipResult.TooLarge;
         byte[] hash = content.Sha256;
         ClipboardItem item;
         lock (_lock)
         {
-            if (_lastAppliedHash is not null && CryptographicOperations.FixedTimeEquals(_lastAppliedHash, hash)) return false;
-            if (_latest is not null && CryptographicOperations.FixedTimeEquals(_latest.ContentSha256.Span, hash)) return false;
+            if (_lastAppliedHash is not null)
+            {
+                if (CryptographicOperations.FixedTimeEquals(_lastAppliedHash, hash)) return ClipResult.Duplicate; // our own echo
+                // The user copied something else since: copying the applied content again later is a real copy.
+                _lastAppliedHash = null;
+            }
+            if (_latest is not null && CryptographicOperations.FixedTimeEquals(_latest.ContentSha256.Span, hash)) return ClipResult.Duplicate;
             item = ToItem(content);
             _latest = item;
         }
         History.Add(new ClipboardHistory.Entry(content, _localDeviceId, item.CreatedAtMs));
         _outgoing.Writer.TryWrite(item);
-        return true;
+        return ClipResult.Sent;
     }
 
-    /// <summary>Call when a peer sends an item. Returns true if it was applied.</summary>
-    public async ValueTask<bool> OnRemoteAsync(ClipboardItem item)
+    /// <summary>Call when a peer sends an item. <see cref="ClipResult.Applied"/> means it is now on the local clipboard.</summary>
+    public async ValueTask<ClipResult> OnRemoteAsync(ClipboardItem item)
     {
         ArgumentNullException.ThrowIfNull(item);
-        if (!Enabled) return false;
+        if (!Enabled) return ClipResult.Disabled;
         var content = FromItem(item);
-        if (content is null) return false;
+        if (content is null) return ClipResult.Invalid;
         byte[] hash = content.Sha256;
-        if (!CryptographicOperations.FixedTimeEquals(hash, item.ContentSha256.Span)) return false;
+        if (!CryptographicOperations.FixedTimeEquals(hash, item.ContentSha256.Span)) return ClipResult.Invalid;
         lock (_lock)
         {
             if (_latest is not null)
             {
-                if (CryptographicOperations.FixedTimeEquals(_latest.ContentSha256.Span, hash)) return false;
-                if (item.CatchUp && item.CreatedAtMs <= _latest.CreatedAtMs) return false;
+                if (CryptographicOperations.FixedTimeEquals(_latest.ContentSha256.Span, hash)) return ClipResult.Duplicate;
+                if (item.CatchUp && item.CreatedAtMs <= _latest.CreatedAtMs) return ClipResult.Older;
             }
             var stored = item.Clone();
             stored.CatchUp = false;
@@ -84,7 +94,7 @@ public sealed class ClipSync : IDisposable
         }
         History.Add(new ClipboardHistory.Entry(content, item.OriginDeviceId, item.CreatedAtMs));
         await _apply(content, item).ConfigureAwait(false);
-        return true;
+        return ClipResult.Applied;
     }
 
     public ClipboardItem? CatchUpItem()

@@ -19,6 +19,12 @@ internal static class WindowsClipboard
         if (data.GetDataPresent("ExcludeClipboardContentFromMonitorProcessing") || data.GetDataPresent("Clipboard Viewer Ignore")) return null;
         bool sensitive = IsHistoryExcluded(data);
 
+        // Copy on an image file in File Explorer: send the picture itself, so it pastes as an image on the phone.
+        if (data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] { Length: 1 } files)
+        {
+            return ReadImageFile(files[0], sensitive);
+        }
+
         if (data.GetDataPresent(DataFormats.UnicodeText))
         {
             string? text = data.GetData(DataFormats.UnicodeText) as string;
@@ -39,6 +45,32 @@ internal static class WindowsClipboard
             }
         }
         return null;
+    }
+
+    private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff",
+    };
+
+    private const long MaxImageFileBytes = 64L * 1024 * 1024;
+
+    /// <summary>A single copied image file becomes an image clip (PNG kept as-is, others converted).</summary>
+    private static ImageClip? ReadImageFile(string path, bool sensitive)
+    {
+        if (!ImageExtensions.Contains(Path.GetExtension(path))) return null;
+        var info = new FileInfo(path);
+        if (!info.Exists || info.Length == 0 || info.Length > MaxImageFileBytes) return null;
+        byte[] bytes = File.ReadAllBytes(path);
+        if (bytes.Length > 8 && bytes[0] == 0x89 && bytes[1] == (byte)'P' && bytes[2] == (byte)'N' && bytes[3] == (byte)'G')
+        {
+            return new ImageClip(bytes, sensitive);
+        }
+        using var input = new MemoryStream(bytes);
+        using var img = Image.FromStream(input, useEmbeddedColorManagement: false, validateImageData: false);
+        if (img.Width > MaxImageSide || img.Height > MaxImageSide) return null;
+        using var output = new MemoryStream();
+        img.Save(output, ImageFormat.Png);
+        return new ImageClip(output.ToArray(), sensitive);
     }
 
     public static void Write(ClipContent content)
