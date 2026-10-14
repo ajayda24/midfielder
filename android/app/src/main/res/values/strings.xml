@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Midfielder</string>
+    <string name="share_label">Send to PC</string>
+    <string name="tile_label">Send clipboard</string>
+    <string name="accessibility_label">Midfielder clipboard detection</string>
+    <string name="accessibility_description">Lets Midfielder notice when you tap Copy, so the copied text or image reaches your PC instantly. Midfielder does not read or store screen content.</string>
+</resources>

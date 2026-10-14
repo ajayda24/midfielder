@@ -5,10 +5,6 @@ wire = "5.1.0"
 coroutines = "1.9.0"
 bouncycastle = "1.79"
 junit = "5.11.3"
-androidx-core = "1.15.0"
-androidx-activity = "1.9.3"
-androidx-lifecycle = "2.8.7"
-compose-bom = "2024.12.01"
 zxing = "3.5.3"
 leakcanary = "2.14"
 
@@ -20,19 +16,11 @@ wire-runtime = { module = "com.squareup.wire:wire-runtime", version.ref = "wire"
 bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
-androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
-androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
-androidx-lifecycle-service = { module = "androidx.lifecycle:lifecycle-service", version.ref = "androidx-lifecycle" }
-androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
-compose-material3 = { module = "androidx.compose.material3:material3" }
-compose-ui = { module = "androidx.compose.ui:ui" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 leakcanary = { module = "com.squareup.leakcanary:leakcanary-android", version.ref = "leakcanary" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 wire = { id = "com.squareup.wire", version.ref = "wire" }

@@ -34,8 +34,8 @@ include(":core")
 // :app needs the Android SDK. Include it only when an SDK is configured, so `./gradlew :core:test`
 // works on machines (and CI jobs) without one.
 val localProps = file("local.properties")
-val hasSdk = System.getenv("ANDROID_HOME") != null ||
-    System.getenv("ANDROID_SDK_ROOT") != null ||
+val hasSdk = !System.getenv("ANDROID_HOME").isNullOrBlank() ||
+    !System.getenv("ANDROID_SDK_ROOT").isNullOrBlank() ||
     (localProps.exists() && localProps.readText().contains("sdk.dir"))
 if (hasSdk) {
     include(":app")
