@@ -37,4 +37,6 @@ tasks.test {
     useJUnitPlatform()
     // Golden vectors shared with the C# test suite.
     systemProperty("midfielder.vectors", file("../../protocol/test-vectors").absolutePath)
+    // Cross-language interop: ./gradlew :core:test -PinteropCli=/path/to/Midfielder.Cli.dll
+    providers.gradleProperty("interopCli").orNull?.let { systemProperty("midfielder.interop.cli", it) }
 }

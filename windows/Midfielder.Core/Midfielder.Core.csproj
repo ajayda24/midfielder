@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Midfielder.Core</RootNamespace>
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="Grpc.Tools" Version="2.67.0" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="../../protocol/midfielder.proto" GrpcServices="None" Link="Protocol/midfielder.proto" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Midfielder.Core.Tests" />
+  </ItemGroup>
+</Project>

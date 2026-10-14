@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Headless node for debugging and the cross-language interop test (runs on any OS). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Midfielder.Core/Midfielder.Core.csproj" />
+  </ItemGroup>
+</Project>
