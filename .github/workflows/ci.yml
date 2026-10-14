@@ -46,10 +46,16 @@ jobs:
       - name: Build debug + release APKs and run lint
         working-directory: android
         run: ./gradlew :app:assembleDebug :app:assembleRelease :app:lintDebug
-      - uses: actions/upload-artifact@v4
+      - name: Install-ready APK (release build, minified)
+        uses: actions/upload-artifact@v4
         with:
           name: midfielder-android
-          path: android/app/build/outputs/apk/**/*.apk
+          path: android/app/build/outputs/apk/release/*.apk
+      - name: Debug APK (with LeakCanary, for development)
+        uses: actions/upload-artifact@v4
+        with:
+          name: midfielder-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
 
   windows:
     name: Windows app (build + tests on Windows)
@@ -61,8 +67,10 @@ jobs:
           dotnet-version: 8.0.x
       - name: Core tests on Windows (SChannel TLS 1.3)
         run: dotnet test windows/Midfielder.Core.Tests -c Release
-      - name: Publish tray app
-        run: dotnet publish windows/Midfielder.App -c Release -r win-x64 --self-contained false -o publish
+      - name: Publish tray app (single self-contained Midfielder.exe, no .NET install needed)
+        run: >-
+          dotnet publish windows/Midfielder.App -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish
       - uses: actions/upload-artifact@v4
         with:
           name: midfielder-windows

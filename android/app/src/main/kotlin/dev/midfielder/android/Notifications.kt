@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 
 /** All notifications in one place. The always-on one is IMPORTANCE_MIN: no sound, no status-bar icon. */
 class Notifications(context: Context) {
@@ -32,7 +33,7 @@ class Notifications(context: Context) {
             Intent(app, ClipboardReaderActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(app, STATUS)
+        val builder = Notification.Builder(app, STATUS)
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle("Midfielder")
             .setContentText(text)
@@ -41,8 +42,9 @@ class Notifications(context: Context) {
             .setShowWhen(false)
             .setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(null, "Send clipboard", sendClip).build())
-            .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
-            .build()
+        // Android 12+ may delay foreground-service notifications by ~10 s; older versions show them at once.
+        if (Build.VERSION.SDK_INT >= 31) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        return builder.build()
     }
 
     fun updateStatus(text: String) = nm.notify(STATUS_ID, status(text))

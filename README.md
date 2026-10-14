@@ -28,9 +28,10 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/PROTOCOL.md](docs
 
 ## Install
 
-Build outputs come from CI (GitHub Actions → latest run → artifacts), or build locally (below).
+**Step-by-step guide: [docs/INSTALL.md](docs/INSTALL.md)** (download, Windows, Android, one-time setup,
+troubleshooting). Short version:
 
-**Windows:** run `Midfielder.exe` from the `midfielder-windows` artifact (needs the .NET 8 Desktop Runtime).
+**Windows:** run `Midfielder.exe` from the `midfielder-windows` CI artifact (self-contained, nothing else to install).
 It sits in the tray. On first start, Windows Firewall asks whether to allow it. Allow **Private networks**.
 
 **Android (10+):** install the APK from `midfielder-android` (sideload). Open it and tap **Pair with PC**,
