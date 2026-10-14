@@ -1,0 +1,151 @@
+// Midfielder wire protocol, version 1.
+//
+// Single source of truth for both the Kotlin (Wire) and C# (Google.Protobuf) code.
+// Every frame on the wire is: 4-byte big-endian unsigned length N, then N bytes of an encoded Envelope.
+// Rules (enforced on both sides, see docs/PROTOCOL.md):
+//   * N must be 1..MAX_FRAME (8 MiB). Anything else closes the connection before allocating.
+//   * Unknown oneof cases are ignored, so newer peers can add messages without breaking older ones.
+//   * Field numbers are never reused. Add new fields; don't renumber.
+syntax = "proto3";
+
+package midfielder.v1;
+
+option java_package = "dev.midfielder.proto";
+option csharp_namespace = "Midfielder.Protocol";
+
+message Envelope {
+  oneof body {
+    // Session setup (control connection).
+    Hello hello = 10;
+    PairRequest pair_request = 11;
+    PairResult pair_result = 12;
+    Ping ping = 13;
+    Pong pong = 14;
+    Bye bye = 15;
+
+    // Clipboard.
+    ClipboardItem clipboard = 20;
+
+    // File transfer (offers travel on the control connection).
+    TransferOffer transfer_offer = 30;
+    TransferAnswer transfer_answer = 31;
+    TransferCancel transfer_cancel = 32;
+
+    // Data connection (a separate TLS connection per file).
+    DataOpen data_open = 40;
+    DataResume data_resume = 41;
+    DataDone data_done = 42;
+  }
+}
+
+enum DeviceKind {
+  DEVICE_KIND_UNSPECIFIED = 0;
+  DEVICE_KIND_WINDOWS = 1;
+  DEVICE_KIND_ANDROID = 2;
+  DEVICE_KIND_OTHER = 3;
+}
+
+// First frame each side sends on a control connection.
+message Hello {
+  string device_id = 1;          // hex of the first 16 bytes of the certificate's SHA-256 fingerprint
+  string device_name = 2;        // human readable, e.g. "Ajay's laptop" (max 64 chars)
+  DeviceKind kind = 3;
+  uint32 protocol_version = 4;   // 1
+  repeated string capabilities = 5; // e.g. "clipboard.text", "clipboard.image", "file"
+}
+
+// Sent by the dialer right after Hello when pairing for the first time.
+// proof = HMAC-SHA256(secret, "midfielder-pair-client-v1" || client_fp || server_fp)
+message PairRequest {
+  bytes proof = 1;
+}
+
+// proof = HMAC-SHA256(secret, "midfielder-pair-server-v1" || client_fp || server_fp)
+message PairResult {
+  bool accepted = 1;
+  bytes proof = 2;
+  string reason = 3;
+}
+
+message Ping {
+  int64 sent_at_ms = 1;
+}
+
+message Pong {
+  int64 echo_sent_at_ms = 1;
+}
+
+message Bye {
+  string reason = 1;
+}
+
+enum ClipKind {
+  CLIP_KIND_UNSPECIFIED = 0;
+  CLIP_KIND_TEXT = 1;   // inline_data is UTF-8
+  CLIP_KIND_IMAGE = 2;  // inline_data is PNG
+}
+
+message ClipboardItem {
+  bytes id = 1;                  // 16 random bytes
+  string origin_device_id = 2;
+  int64 created_at_ms = 3;
+  ClipKind kind = 4;
+  string mime = 5;               // "text/plain" or "image/png"
+  bytes content_sha256 = 6;      // hash of the content bytes, used for loop prevention
+  bytes inline_data = 7;         // content when it fits in a frame
+  uint64 size = 8;               // content size in bytes
+  string transfer_id = 9;        // set instead of inline_data for large images (sent as a transfer)
+  bool sensitive = 10;           // receiver must not keep it in history
+  bool catch_up = 11;            // re-sent on reconnect; receiver applies it only if newer than its own latest
+}
+
+enum TransferPurpose {
+  TRANSFER_PURPOSE_UNSPECIFIED = 0;
+  TRANSFER_PURPOSE_FILE = 1;
+  TRANSFER_PURPOSE_CLIPBOARD = 2;
+}
+
+message FileEntry {
+  string name = 1;               // file name only, never a path; receiver sanitizes again
+  uint64 size = 2;
+  bytes sha256 = 3;               // optional; when empty the receiver relies on the DataDone trailer hash
+  string mime = 4;
+  int64 modified_ms = 5;
+}
+
+message TransferOffer {
+  string transfer_id = 1;        // 32 hex chars
+  repeated FileEntry files = 2;
+  TransferPurpose purpose = 3;
+}
+
+message TransferAnswer {
+  string transfer_id = 1;
+  bool accepted = 2;
+  string reason = 3;
+}
+
+message TransferCancel {
+  string transfer_id = 1;
+  string reason = 2;
+}
+
+// First frame on a data connection, always sent by the dialer.
+message DataOpen {
+  string transfer_id = 1;
+  uint32 file_index = 2;
+}
+
+// Sent by the receiving side after DataOpen: how many bytes it already has.
+// The sender then streams raw bytes [offset, size) with no further framing.
+message DataResume {
+  uint64 offset = 1;
+}
+
+// Sent twice per file: first by the sender right after the last raw byte (ok = true, sha256 = hash of the
+// whole file, computed while streaming), then by the receiver once it has verified the hash.
+message DataDone {
+  bool ok = 1;
+  string reason = 2;
+  bytes sha256 = 3;
+}
