@@ -68,7 +68,7 @@ class FrameCodecTest {
 
     @Test
     fun `random garbage never escapes as anything but a protocol or EOF error`() {
-        // A cheap fuzz pass; the CI fuzz job (Jazzer) runs much longer.
+        // A quick random-input pass over the decoder (a coverage-guided fuzzer would be the next step).
         val rnd = Random(1234)
         repeat(20_000) {
             val len = rnd.nextInt(64)
