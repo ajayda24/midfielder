@@ -74,6 +74,9 @@ Then choose **one** way to detect copies:
 5. On the phone: Settings → Apps → Midfielder → **Force stop**, then open Midfielder again. The checklist
    shows ✓ for *Detect copies silently*. You can turn USB debugging off again; the permission stays (until
    you uninstall the app).
+6. Android 13+ then asks **"Allow Midfielder to access all device logs?"** when you open Midfielder. Tap
+   **Allow one-time access**. Recent activity shows *Copy detection: active*. After a phone restart or an
+   app update, open Midfielder once and allow it again (the status notification reminds you).
 
 **Option B (no PC needed):** tap **…or detect copies with accessibility → Open**, choose **Midfielder
 clipboard detection**, and turn it on.

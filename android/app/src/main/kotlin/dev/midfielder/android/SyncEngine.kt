@@ -145,30 +145,33 @@ class SyncEngine(context: Context) : Closeable {
 
     val captureMode: String
         get() = when {
-            triggers.hasReadLogs -> "Automatic (ADB permission)"
+            triggers.logAccessActive -> "Automatic (log access approved)"
+            triggers.hasReadLogs && !isAccessibilityOn() -> "Needs approval: reopen Midfielder and tap \"Allow\" when Android asks"
             isAccessibilityOn() -> "Automatic (accessibility)"
             else -> "Tap \"Send clipboard\" (or enable automatic mode)"
         }
 
     fun start() {
-        val power = app.getSystemService(PowerManager::class.java)
         connections.onScreenChanged = { on ->
-            triggers.onScreen(on)
             if (on) for (d in node.connectedPeers.value) node.session(d.fingerprint)?.probe()
         }
         connections.start()
-        triggers.start(power.isInteractive)
+        triggers.start()
         refreshStatus("Started")
     }
 
     fun statusText(): String {
         val s = _status.value
+        val needsApproval = triggers.hasReadLogs && !triggers.logAccessActive && !isAccessibilityOn()
         return when {
+            s.connected.isNotEmpty() && needsApproval ->
+                "Connected to ${s.connected.joinToString()} · open Midfielder once to turn on automatic copy"
             s.connected.isNotEmpty() -> "Connected to ${s.connected.joinToString()}"
             s.paired.isNotEmpty() -> "Waiting for ${s.paired.joinToString()}"
             else -> "Not paired yet: open Midfielder to pair with your PC"
         }
     }
+
 
     suspend fun pair(invite: PairingInvite): PairedDevice {
         val session = node.pair(invite)
@@ -180,6 +183,15 @@ class SyncEngine(context: Context) : Closeable {
     fun unpairAll() {
         for (d in storage.trustStore.all()) node.unpair(d.fingerprint)
         refreshStatus("Forgot paired PCs")
+    }
+
+    /** True once Android approved log access, so copies are detected without any tap. */
+    val logDetectionActive: Boolean get() = triggers.logAccessActive
+
+    /** Midfielder's screen came to the front: the moment Android can show the log-access prompt. */
+    fun onUiResumed() {
+        uiInForeground = true
+        triggers.ensureLogReader(inForeground = true)
     }
 
     /** A trigger fired: read the clipboard now (directly if our UI is in front, else via the reader activity). */

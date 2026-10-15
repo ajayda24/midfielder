@@ -30,11 +30,16 @@ apps* (or an enabled accessibility service).
 | Layer | How it detects | Setup | Battery cost |
 |---|---|---|---|
 | Clipboard listener | `OnPrimaryClipChangedListener` | none | zero; fires only while our UI is in front (on some OEM builds, always) |
-| **Logcat** (recommended) | When the clipboard changes, Android tries to notify our listener, refuses because we're in the background, and logs `ClipboardService: Denying clipboard access to dev.midfielder…`. We read that line. | `adb shell pm grant dev.midfielder android.permission.READ_LOGS`, once | small; the `logcat` reader runs **only while the screen is on**, filtered to `ClipboardService:E` |
+| **Logcat** (recommended) | When the clipboard changes, Android tries to notify our listener, refuses because we're in the background, and logs `ClipboardService: Denying clipboard access to dev.midfielder…`. We read that line. | `adb shell pm grant dev.midfielder android.permission.READ_LOGS`, once. On Android 13+ also tap **Allow** on "access all device logs?" when Midfielder is open (again after a reboot or app update) | small: one filtered `logcat` reader, kept running once approved; it never wakes the CPU itself |
 | Accessibility | Taps on "Copy" and "Copied" toasts (localized via `android.R.string.copy`) | enable in Accessibility settings | very small; click and notification events only, no window content |
 | Manual | Quick Settings tile, notification button, Share → Send to PC | none | zero |
 
 Opening the Midfielder app also sends whatever is on the clipboard at that moment (duplicates are ignored).
+
+**Android 13+ log approval:** every time a log reader starts, Android asks the user to approve access
+to other apps' logs, and only while the app is on screen. A reader started in the background silently
+sees only its own lines. Midfielder therefore starts the reader while its screen is open, keeps the
+approved reader running, and shows "Copy detection: active" in Recent activity once it is approved.
 
 **Known side effect:** the focus trick can briefly hide the keyboard in the app you copied from. A
 "pasted from Midfielder" toast may also appear on Android 12+.

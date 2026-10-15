@@ -18,7 +18,9 @@ import kotlinx.coroutines.runInterruptible
  *
  *  1. Clipboard listener: fires while our UI is in front (and on some OEM builds always).
  *  2. Logcat (needs READ_LOGS, granted once over ADB): Android logs "Denying clipboard access to <pkg>"
- *     every time the clipboard changes while we're in the background. Watched only while the screen is on.
+ *     every time the clipboard changes while we're in the background. Android 13+ also asks the user to
+ *     approve log access each time a reader starts (only possible while Midfielder is on screen), so the
+ *     approved reader keeps running. It only reads filtered lines and costs no wakeups of its own.
  *  3. Accessibility (optional): taps on "Copy" and "Copied" toasts. See [CopyAccessibilityService].
  */
 class CaptureTriggers(
@@ -33,18 +35,35 @@ class CaptureTriggers(
     private var logcatProcess: Process? = null
     private var lastFire = 0L
 
+    /**
+     * True once the log reader has seen a line from another process, i.e. Android approved access.
+     * Android 13+ asks the user ("Allow Midfielder to access all device logs?") every time a log reader
+     * starts, and only while Midfielder is on screen; started in the background it silently sees only our
+     * own lines. So an approved reader is kept running for good instead of being restarted.
+     */
+    @Volatile
+    var logAccessActive: Boolean = false
+        private set
+
     val hasReadLogs: Boolean
         get() = app.checkSelfPermission(Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
 
-    fun start(screenOn: Boolean) {
+    fun start() {
         clipboard.addPrimaryClipChangedListener(listener)
         CopyAccessibilityService.onCopy = { fire("accessibility") }
-        onScreen(screenOn)
+        ensureLogReader()
     }
 
-    /** The logcat reader exists only while the screen is on: nobody copies with the screen off. */
-    fun onScreen(on: Boolean) {
-        if (on && hasReadLogs) startLogcat() else stopLogcat()
+    /**
+     * Starts the log reader if it isn't running yet. Call when Midfielder's screen is in front, so Android can
+     * show its approval prompt. A reader that is running but not approved is restarted then, for a new prompt.
+     */
+    fun ensureLogReader(inForeground: Boolean = false) {
+        if (!hasReadLogs) return
+        val running = logcatJob?.isActive == true
+        if (running && (logAccessActive || !inForeground)) return
+        stopLogcat()
+        startLogcat()
     }
 
     fun stop() {
@@ -61,25 +80,44 @@ class CaptureTriggers(
     }
 
     private fun startLogcat() {
-        if (logcatJob?.isActive == true) return
         val needle = "Denying clipboard access to ${app.packageName}"
+        val myPid = android.os.Process.myPid()
+        logAccessActive = false
         logcatJob = scope.launch(Dispatchers.IO) {
             val process = runCatching {
-                // -T 1: start at the newest entry; only ClipboardService errors pass the filter.
-                ProcessBuilder("logcat", "-T", "1", "-v", "brief", "ClipboardService:E", "*:S").redirectErrorStream(true).start()
+                // -T 1: start at the newest entry. ClipboardService errors are the copy signal; ActivityTaskManager
+                // lines (activity starts, rare) only prove that Android approved access to other apps' logs.
+                ProcessBuilder(
+                    "logcat", "-T", "1", "-v", "brief", "ClipboardService:E", "ActivityTaskManager:I", "*:S",
+                ).redirectErrorStream(true).start()
             }.getOrNull() ?: return@launch
             logcatProcess = process
+            EventLog.add("Copy detection: log reader started (approve the prompt if Android shows one)")
             try {
                 process.inputStream.bufferedReader().use { reader ->
                     while (isActive) {
                         val line = runInterruptible { reader.readLine() } ?: break
+                        if (!logAccessActive && pidOf(line).let { it != null && it != myPid }) {
+                            logAccessActive = true
+                            EventLog.add("Copy detection: active (automatic phone → PC)")
+                        }
                         if (line.contains(needle)) fire("logcat")
                     }
                 }
             } finally {
                 process.destroy()
+                if (logAccessActive) EventLog.add("Copy detection: log reader stopped")
+                logAccessActive = false
             }
         }
+    }
+
+    /** "-v brief" lines look like "E/ClipboardService( 1234): ...". */
+    private fun pidOf(line: String): Int? {
+        val open = line.indexOf('(')
+        val close = line.indexOf(')', open + 1)
+        if (open < 0 || close < 0) return null
+        return line.substring(open + 1, close).trim().toIntOrNull()
     }
 
     private fun stopLogcat() {
@@ -87,6 +125,7 @@ class CaptureTriggers(
         logcatProcess = null
         logcatJob?.cancel()
         logcatJob = null
+        logAccessActive = false
     }
 
     private companion object {

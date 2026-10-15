@@ -55,11 +55,14 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        SyncEngine.current?.uiInForeground = true
+        SyncEngine.current?.onUiResumed()
         refreshChecklist()
         activityJob?.cancel()
         activityJob = ui.launch {
-            EventLog.lines.collect { lines -> activity.text = lines.take(15).joinToString("\n").ifEmpty { "Nothing yet" } }
+            EventLog.lines.collect { lines ->
+                activity.text = lines.take(15).joinToString("\n").ifEmpty { "Nothing yet" }
+                SyncEngine.current?.let { capture.text = "Phone → PC clipboard: ${it.captureMode}" }
+            }
         }
         statusJob?.cancel()
         statusJob = ui.launch {
@@ -68,7 +71,7 @@ class MainActivity : Activity() {
                 delay(100)
                 engine = SyncEngine.current
             }
-            engine.uiInForeground = true
+            engine.onUiResumed()
             engine.status.collect {
                 status.text = engine.statusText()
                 capture.text = "Phone → PC clipboard: ${engine.captureMode}"
@@ -168,6 +171,13 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         })
         val readLogs = checkSelfPermission(Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
+        if (readLogs && SyncEngine.current?.logDetectionActive != true) {
+            // Granted over ADB, but Android 13+ also wants a tap on "Allow" each time detection starts.
+            checklist.addView(step("Approve log access: tap \"Allow one-time access\" when Android asks", false, actionLabel = "Ask") {
+                SyncEngine.current?.onUiResumed()
+                checklist.postDelayed({ refreshChecklist() }, 4_000)
+            })
+        }
         checklist.addView(step("Detect copies silently (one-time ADB command, recommended)", readLogs) {
             val cmd = "adb shell pm grant $packageName android.permission.READ_LOGS"
             getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("adb", cmd))
