@@ -18,6 +18,7 @@ class SendClipboardTileService : TileService() {
     override fun onClick() {
         val intent = Intent(this, ClipboardReaderActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            .putExtra(ClipboardReaderActivity.EXTRA_FORCE, true)
         if (Build.VERSION.SDK_INT >= 34) {
             startActivityAndCollapse(PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE))
         } else {

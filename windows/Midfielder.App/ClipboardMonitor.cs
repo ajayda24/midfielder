@@ -19,6 +19,8 @@ internal sealed class ClipboardMonitor : NativeWindow, IDisposable
     public event EventHandler? Changed;
 
     /// <summary>Call right after writing the clipboard ourselves so that update is not re-sent.</summary>
+    public IntPtr OwnerHandle => Handle;
+
     public void IgnoreCurrentSequence() => _ignoreSequence = NativeMethods.GetClipboardSequenceNumber();
 
     protected override void WndProc(ref Message m)

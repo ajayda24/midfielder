@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -5,7 +6,7 @@ using Midfielder.Core.Clip;
 
 namespace Midfielder.App;
 
-/// <summary>Reads/writes the Windows clipboard (UI/STA thread only).</summary>
+/// <summary>Reads/writes the Windows clipboard (UI thread).</summary>
 internal static class WindowsClipboard
 {
     private const int MaxImageSide = 8192;
@@ -73,23 +74,26 @@ internal static class WindowsClipboard
         return new ImageClip(output.ToArray(), sensitive);
     }
 
-    public static void Write(ClipContent content)
+    /// <summary>
+    /// Puts content on the clipboard with the plain Win32 API (OpenClipboard/SetClipboardData) rather than OLE.
+    /// OLE's SetDataObject can block indefinitely while it waits on other programs; this either finishes at
+    /// once or throws. <paramref name="owner"/> is our clipboard listener window.
+    /// </summary>
+    public static void Write(ClipContent content, IntPtr owner)
     {
-        var data = new DataObject();
+        var formats = new List<(uint Format, byte[] Data)>();
         switch (content)
         {
             case TextClip t:
-                data.SetText(t.Text, TextDataFormat.UnicodeText);
+                formats.Add((NativeMethods.CF_UNICODETEXT, System.Text.Encoding.Unicode.GetBytes(t.Text + "\0")));
                 break;
             case ImageClip i:
-                // PNG keeps transparency for apps that understand it; the bitmap is for everything else.
-                data.SetData("PNG", false, new MemoryStream(i.Bytes.ToArray()));
-                using (var ms = new MemoryStream(i.Bytes.ToArray()))
-                using (var bmp = Image.FromStream(ms))
-                {
-                    if (bmp.Width > MaxImageSide || bmp.Height > MaxImageSide) return;
-                    data.SetData(DataFormats.Bitmap, true, new Bitmap(bmp));
-                }
+                byte[] png = i.Bytes.ToArray();
+                byte[]? dib = PngToDib(png);
+                if (dib is null) return;
+                formats.Add((NativeMethods.CF_DIB, dib));
+                // PNG too, so apps that understand it keep transparency.
+                formats.Add((NativeMethods.RegisterClipboardFormat("PNG"), png));
                 break;
             default:
                 return;
@@ -97,14 +101,71 @@ internal static class WindowsClipboard
         if (content.Sensitive)
         {
             // Keep synced secrets out of Win+V history and cloud clipboard.
-            data.SetData("CanIncludeInClipboardHistory", false, new MemoryStream(BitConverter.GetBytes(0)));
-            data.SetData("CanUploadToCloudClipboard", false, new MemoryStream(BitConverter.GetBytes(0)));
+            byte[] zero = BitConverter.GetBytes(0);
+            formats.Add((NativeMethods.RegisterClipboardFormat("CanIncludeInClipboardHistory"), zero));
+            formats.Add((NativeMethods.RegisterClipboardFormat("CanUploadToCloudClipboard"), zero));
         }
-        Retry(() =>
+
+        OpenWithRetry(owner);
+        try
         {
-            Clipboard.SetDataObject(data, copy: true);
-            return true;
-        });
+            if (!NativeMethods.EmptyClipboard()) throw new Win32Exception(Marshal.GetLastWin32Error(), "EmptyClipboard failed");
+            foreach (var (format, data) in formats) SetData(format, data);
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
+
+    /// <summary>Another program may have the clipboard open for a moment; retry for up to ~1 s, never longer.</summary>
+    private static void OpenWithRetry(IntPtr owner)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            if (NativeMethods.OpenClipboard(owner)) return;
+            if (attempt >= 20) throw new Win32Exception(Marshal.GetLastWin32Error(), "The clipboard is in use by another program");
+            Thread.Sleep(50);
+        }
+    }
+
+    private static void SetData(uint format, byte[] data)
+    {
+        IntPtr handle = NativeMethods.GlobalAlloc(NativeMethods.GMEM_MOVEABLE, (UIntPtr)(uint)data.Length);
+        if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "GlobalAlloc failed");
+        try
+        {
+            IntPtr target = NativeMethods.GlobalLock(handle);
+            if (target == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "GlobalLock failed");
+            try
+            {
+                Marshal.Copy(data, 0, target, data.Length);
+            }
+            finally
+            {
+                NativeMethods.GlobalUnlock(handle);
+            }
+            if (NativeMethods.SetClipboardData(format, handle) == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetClipboardData failed");
+            handle = IntPtr.Zero; // the clipboard owns it now
+        }
+        finally
+        {
+            if (handle != IntPtr.Zero) NativeMethods.GlobalFree(handle);
+        }
+    }
+
+    /// <summary>CF_DIB is a BMP file without its 14-byte file header.</summary>
+    private static byte[]? PngToDib(byte[] png)
+    {
+        using var input = new MemoryStream(png);
+        using var img = Image.FromStream(input, useEmbeddedColorManagement: false, validateImageData: false);
+        if (img.Width > MaxImageSide || img.Height > MaxImageSide) return null;
+        using var bmp = new Bitmap(img);
+        using var output = new MemoryStream();
+        bmp.Save(output, ImageFormat.Bmp);
+        const int fileHeader = 14;
+        return output.Length <= fileHeader ? null : output.ToArray()[fileHeader..];
     }
 
     private static bool IsHistoryExcluded(IDataObject data) =>

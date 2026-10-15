@@ -207,7 +207,7 @@ class SyncEngine(context: Context) : Closeable {
      * Called by the reader activity, the share sheet and the UI with fresh clipboard content.
      * Returns a short, user-facing description of what happened.
      */
-    fun onLocalClipboard(content: ClipContent): String {
+    fun onLocalClipboard(content: ClipContent, force: Boolean = false): String {
         val what = describe(content)
         val peers = node.connectedPeers.value
         if (!clipSync.isInlineSize(content)) {
@@ -216,8 +216,8 @@ class SyncEngine(context: Context) : Closeable {
             sendToPcs(listOf(BytesFileSource("clipboard.png", content.png, "image/png")), TransferPurpose.TRANSFER_PURPOSE_CLIPBOARD)
             return if (peers.isEmpty()) "PC not connected" else "Sending image to ${peers.first().name}"
         }
-        val result = clipSync.onLocalChange(content)
-        EventLog.add("Local copy: $what -> $result")
+        val result = clipSync.onLocalChange(content, force)
+        EventLog.add("${if (force) "Send now" else "Local copy"}: $what -> $result")
         if (result == ClipResult.SENT && peers.isEmpty()) connections.kick("clipboard")
         return when {
             result == ClipResult.DISABLED -> "Clipboard sync is turned off"

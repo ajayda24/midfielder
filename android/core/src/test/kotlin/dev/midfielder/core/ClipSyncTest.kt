@@ -49,6 +49,9 @@ class ClipSyncTest {
         assertEquals(ClipResult.DUPLICATE, phone.sync.onLocalChange(ClipContent.Text("from pc")))
         assertEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("typed on phone")))
         assertEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("from pc")))
+        // An explicit "send now" always sends, even unchanged content.
+        assertEquals(ClipResult.DUPLICATE, phone.sync.onLocalChange(ClipContent.Text("from pc")))
+        assertEquals(ClipResult.SENT, phone.sync.onLocalChange(ClipContent.Text("from pc"), force = true))
     }
 
     @Test

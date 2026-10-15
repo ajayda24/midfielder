@@ -240,11 +240,22 @@ internal sealed class TrayContext : ApplicationContext
         return ValueTask.CompletedTask;
     }
 
-    private Task ApplyRemoteAsync(ClipContent content, ClipboardItem item) => OnUiAsync(() =>
+    private Task ApplyRemoteAsync(ClipContent content, ClipboardItem item)
+    {
+        var applied = OnUiAsync(() => ApplyOnUi(content));
+        // If the UI thread doesn't get to it promptly, say so in the log rather than failing silently.
+        _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
+        {
+            if (!applied.IsCompleted) AppLog.Error("Applying a received clip has not finished after 5 s");
+        }, TaskScheduler.Default);
+        return applied;
+    }
+
+    private void ApplyOnUi(ClipContent content)
     {
         try
         {
-            WindowsClipboard.Write(content);
+            WindowsClipboard.Write(content, _monitor.OwnerHandle);
             _monitor.IgnoreCurrentSequence();
             AppLog.Info($"Applied to Windows clipboard: {Describe(content)}");
         }
@@ -253,7 +264,7 @@ internal sealed class TrayContext : ApplicationContext
             // Never let one clipboard write take anything else down; the next copy will sync.
             AppLog.Error("Writing the Windows clipboard failed", e);
         }
-    });
+    }
 
     private ValueTask ApplyRemoteValueTaskAsync(ClipContent content, ClipboardItem item) => new(ApplyRemoteAsync(content, item));
 
@@ -353,7 +364,7 @@ internal sealed class TrayContext : ApplicationContext
 
     private void OnTransferFinished(string transferId, PairedDevice from, TransferResult result)
     {
-        AppLog.Info($"Transfer {transferId[..8]} from {from.Name}: {result}");
+        AppLog.Info($"Transfer {transferId[..8]} from {from.Name}: {(result is TransferResult.Completed c ? $"{c.Locations.Count} file(s) received" : Describe(result))}");
         if (_clipboardTransfers.TryRemove(transferId, out _))
         {
             if (result is TransferResult.Completed { Locations.Count: 1 } done)
@@ -363,7 +374,7 @@ internal sealed class TrayContext : ApplicationContext
                 {
                     try
                     {
-                        WindowsClipboard.Write(new ImageClip(File.ReadAllBytes(path)));
+                        WindowsClipboard.Write(new ImageClip(File.ReadAllBytes(path)), _monitor.OwnerHandle);
                         _monitor.IgnoreCurrentSequence();
                     }
                     catch (Exception e) when (e is IOException or ArgumentException or System.Runtime.InteropServices.ExternalException)

@@ -51,8 +51,11 @@ public class ClipSync(
         }
     }
 
-    /** Call from the platform clipboard monitor. [ClipResult.SENT] means it was queued for every peer. */
-    public fun onLocalChange(content: ClipContent): ClipResult {
+    /**
+     * Call from the platform clipboard monitor. [ClipResult.SENT] means it was queued for every peer.
+     * [force] (an explicit "send" by the user) skips duplicate detection.
+     */
+    public fun onLocalChange(content: ClipContent, force: Boolean = false): ClipResult {
         if (!enabled) return ClipResult.DISABLED
         if (content.bytes.isEmpty()) return ClipResult.INVALID
         if (content is ClipContent.Text && content.bytes.size > Limits.MAX_CLIP_TEXT_BYTES) return ClipResult.TOO_LARGE
@@ -62,13 +65,15 @@ public class ClipSync(
         val item: ClipboardItem
         synchronized(lock) {
             val applied = lastAppliedHash
-            if (applied != null) {
+            if (force) {
+                lastAppliedHash = null
+            } else if (applied != null) {
                 if (Hashes.constantTimeEquals(applied, hash)) return ClipResult.DUPLICATE // our own echo
                 // The user copied something else since: copying the applied content again later is a real copy.
                 lastAppliedHash = null
             }
             val current = latest
-            if (current != null && Hashes.constantTimeEquals(current.content_sha256.toByteArray(), hash)) {
+            if (!force && current != null && Hashes.constantTimeEquals(current.content_sha256.toByteArray(), hash)) {
                 return ClipResult.DUPLICATE
             }
             item = toItem(content)

@@ -117,7 +117,7 @@ class MainActivity : Activity() {
                 content == null -> toast("The clipboard is empty, or Android didn't let Midfielder read it").also {
                     EventLog.add("Manual send: clipboard empty or unreadable")
                 }
-                else -> toast(engine.onLocalClipboard(content))
+                else -> toast(engine.onLocalClipboard(content, force = true))
             }
         })
         root.addView(button("Send files to PC…") {

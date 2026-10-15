@@ -30,7 +30,8 @@ class Notifications(context: Context) {
         val open = PendingIntent.getActivity(app, 0, Intent(app, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val sendClip = PendingIntent.getActivity(
             app, 1,
-            Intent(app, ClipboardReaderActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
+            Intent(app, ClipboardReaderActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                .putExtra(ClipboardReaderActivity.EXTRA_FORCE, true),
             PendingIntent.FLAG_IMMUTABLE,
         )
         val builder = Notification.Builder(app, STATUS)

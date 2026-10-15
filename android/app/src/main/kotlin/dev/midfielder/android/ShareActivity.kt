@@ -22,7 +22,7 @@ class ShareActivity : Activity() {
             !text.isNullOrEmpty() -> {
                 val engine = SyncEngine.current
                 if (engine != null) {
-                    Toast.makeText(this, engine.onLocalClipboard(ClipContent.Text(text)), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, engine.onLocalClipboard(ClipContent.Text(text), force = true), Toast.LENGTH_SHORT).show()
                 } else {
                     SyncService.start(this)
                     Toast.makeText(this, "Midfielder is starting, try again in a moment", Toast.LENGTH_SHORT).show()

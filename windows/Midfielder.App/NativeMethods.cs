@@ -18,6 +18,43 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     public static partial uint GetClipboardSequenceNumber();
 
+    // --- Raw clipboard (no OLE, never blocks indefinitely) ---------------------------------------
+
+    public const uint CF_UNICODETEXT = 13;
+    public const uint CF_DIB = 8;
+    public const uint GMEM_MOVEABLE = 0x0002;
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint RegisterClipboardFormat(string lpszFormat);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial IntPtr GlobalLock(IntPtr hMem);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GlobalUnlock(IntPtr hMem);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial IntPtr GlobalFree(IntPtr hMem);
+
     // --- EcoQoS ("Efficiency mode") -------------------------------------------------------------
 
     private const int ProcessPowerThrottling = 4;

@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
+import android.widget.Toast
 
 /**
  * Invisible, never in Recents. Android lets an app read the clipboard only while one of its windows has
@@ -31,7 +32,10 @@ class ClipboardReaderActivity : Activity() {
             val content = runCatching { ClipboardBridge(this).read() }
                 .onFailure { EventLog.error("Reading the clipboard failed", it) }
                 .getOrNull()
-            if (content != null) engine.onLocalClipboard(content) else EventLog.add("Clipboard is empty or unreadable")
+            if (content != null) {
+                val result = engine.onLocalClipboard(content, force = intent.getBooleanExtra(EXTRA_FORCE, false))
+                if (intent.getBooleanExtra(EXTRA_FORCE, false)) Toast.makeText(this, result, Toast.LENGTH_SHORT).show()
+            } else EventLog.add("Clipboard is empty or unreadable")
         } else {
             SyncService.start(this)
         }
@@ -56,7 +60,9 @@ class ClipboardReaderActivity : Activity() {
         super.onDestroy()
     }
 
-    private companion object {
-        const val FOCUS_TIMEOUT_MS = 1_500L
+    companion object {
+        /** Set by explicit user actions (tile, notification button): send even if unchanged, and show the result. */
+        const val EXTRA_FORCE = "force"
+        private const val FOCUS_TIMEOUT_MS = 1_500L
     }
 }
