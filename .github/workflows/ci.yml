@@ -88,6 +88,16 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Pre-download the emulator and system image (Google's mirror sometimes serves a corrupt zip)
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          for i in 1 2 3 4; do
+            yes | "$SDKM" --install emulator "system-images;android-${{ matrix.api }};google_apis;x86_64" > /dev/null && \
+              [ -d "$ANDROID_HOME/system-images/android-${{ matrix.api }}/google_apis/x86_64" ] && break
+            echo "attempt $i failed; retrying"
+            rm -rf "$ANDROID_HOME/system-images/android-${{ matrix.api }}" "$ANDROID_HOME/.temp"
+            sleep $((i * 10))
+          done
       - name: Install and launch on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:

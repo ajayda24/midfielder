@@ -89,10 +89,11 @@ public sealed partial class MainWindowTests : IDisposable
     /// <summary>Layout rules: page opens at the top, no empty scroll tail, nothing sticks out to the right.</summary>
     private static void Check(MainWindow window, string where, List<string> problems)
     {
+        EnsureLaidOut(window);
         var page = window.Page;
-        if (page is null)
+        if (page is null || page.ActualWidth < 100 || page.ActualHeight < 100)
         {
-            problems.Add($"{where}: no page");
+            problems.Add($"{where}: page not laid out ({page?.ActualWidth:0}x{page?.ActualHeight:0}, window visible: {window.IsVisible})");
             return;
         }
         if (page.Scroller is { } sv)
@@ -144,7 +145,7 @@ public sealed partial class MainWindowTests : IDisposable
     {
         if (dir is null) return;
         var root = (W.FrameworkElement)window.Content;
-        int w = (int)root.ActualWidth, h = (int)root.ActualHeight;
+        var (w, h) = EnsureLaidOut(window);
         var visual = new W.Media.DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
@@ -157,6 +158,24 @@ public sealed partial class MainWindowTests : IDisposable
         encoder.Frames.Add(W.Media.Imaging.BitmapFrame.Create(bmp));
         using var file = File.Create(Path.Combine(dir, name));
         encoder.Save(file);
+    }
+
+    /// <summary>
+    /// The CI runner's desktop may never give the window a real client area; lay the content out at the window's
+    /// requested size so checks and screenshots see the same layout a user would.
+    /// </summary>
+    private static (int W, int H) EnsureLaidOut(MainWindow window)
+    {
+        var root = (W.FrameworkElement)window.Content;
+        window.UpdateLayout();
+        if (root.ActualWidth < 1 || root.ActualHeight < 1)
+        {
+            var size = new W.Size(window.Width, window.Height - 32);
+            root.Measure(size);
+            root.Arrange(new W.Rect(size));
+            root.UpdateLayout();
+        }
+        return ((int)Math.Max(1, root.ActualWidth), (int)Math.Max(1, root.ActualHeight));
     }
 
     private static void Pump(int ms)
