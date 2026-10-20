@@ -25,7 +25,6 @@ internal sealed class FilesPage : Panel
     {
         _host = host;
         BackColor = Theme.Background;
-        Measure.CenterColumn(this, 1100, 32, 24, 16);
         _thumbs = new ThumbnailCache(this, Px(150));
         _browser.Thumbnails = _thumbs;
         _browser.Gallery = s_gallery;
@@ -83,6 +82,12 @@ internal sealed class FilesPage : Panel
     /// <summary>Docked rows get their measured height for the current width before docking runs.</summary>
     protected override void OnLayout(LayoutEventArgs levent)
     {
+        // Layout can run from base-class code before the constructor has created the rows.
+        if (_header is null || _toolbar is null)
+        {
+            base.OnLayout(levent);
+            return;
+        }
         Measure.CenterColumn(this, 1100, 32, 24, 16);
         int w = ClientSize.Width - Padding.Horizontal;
         if (w > 0)

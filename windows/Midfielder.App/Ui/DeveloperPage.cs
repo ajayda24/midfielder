@@ -81,6 +81,11 @@ internal sealed class DeveloperPage : Panel
 
     protected override void OnLayout(LayoutEventArgs levent)
     {
+        if (_toolbar is null)
+        {
+            base.OnLayout(levent);
+            return;
+        }
         Measure.CenterColumn(this, 1100, 32, 24, 24);
         int w = ClientSize.Width - Padding.Horizontal;
         if (w > 0)

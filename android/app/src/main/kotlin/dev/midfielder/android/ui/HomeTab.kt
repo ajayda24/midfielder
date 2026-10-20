@@ -67,7 +67,7 @@ class HomeTab(host: MainActivity) : Tab(host) {
             chipStrokeWidth = 0f
             textSize = 12f
             chipMinHeight = ui.dpf(26f)
-            ensureMinTouchTargetSize = false
+            setEnsureMinTouchTargetSize(false)
         }
         names.addView(statusChip, ui.wrap().apply { topMargin = ui.dp(4) })
         heroTop.addView(names, ui.weight())
