@@ -28,6 +28,7 @@ import dev.midfielder.proto.DeviceKind
 import dev.midfielder.proto.Envelope
 import dev.midfielder.proto.TransferOffer
 import dev.midfielder.proto.TransferPurpose
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,7 +53,10 @@ class SyncEngine(context: Context) : Closeable {
     )
 
     private val app = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Any unexpected error in background work is logged, never allowed to crash the app.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e -> EventLog.error("Unexpected error", e) },
+    )
     val storage = AppStorage(app)
     private val identity = storage.loadOrCreateIdentity()
     private val notifications = Notifications(app)

@@ -11,10 +11,19 @@ if ! grep -q "Success" install.txt; then
   exit 1
 fi
 
-echo "== Launching"
+echo "== Granting READ_LOGS (like the one-time ADB setup users do) and launching"
+adb shell pm grant dev.midfielder android.permission.READ_LOGS || echo "grant not allowed on this image"
 adb logcat -c
 adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity
-sleep 15
+sleep 8
+# Leave and reopen a few times: every resume (re)starts the log reader, which once crashed the app.
+for i in 1 2 3; do
+  adb shell input keyevent KEYCODE_HOME
+  sleep 2
+  adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity
+  sleep 4
+done
+sleep 5
 
 echo "== Crash buffer"
 adb logcat -d -b crash > crash.txt

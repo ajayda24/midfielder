@@ -10,7 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runInterruptible
 
 /**
  * Ways to learn that the user copied something (Android 10+ hides clipboard changes from background apps).
@@ -31,8 +30,11 @@ class CaptureTriggers(
     private val app = context.applicationContext
     private val clipboard = app.getSystemService(ClipboardManager::class.java)
     private val listener = ClipboardManager.OnPrimaryClipChangedListener { fire("listener") }
+    private val readerLock = Any()
     private var logcatJob: Job? = null
     private var logcatProcess: Process? = null
+    private var generation = 0
+    private var readerStartedAt = 0L
     private var lastFire = 0L
 
     /**
@@ -60,16 +62,20 @@ class CaptureTriggers(
      */
     fun ensureLogReader(inForeground: Boolean = false) {
         if (!hasReadLogs) return
-        val running = logcatJob?.isActive == true
-        if (running && (logAccessActive || !inForeground)) return
-        stopLogcat()
-        startLogcat()
+        synchronized(readerLock) {
+            val running = logcatJob?.isActive == true
+            if (running && (logAccessActive || !inForeground)) return
+            // A reader started moments ago may still be waiting for the user to answer Android's prompt.
+            if (running && SystemClock.elapsedRealtime() - readerStartedAt < PROMPT_GRACE_MS) return
+            stopLogcatLocked()
+            startLogcatLocked()
+        }
     }
 
     fun stop() {
         clipboard.removePrimaryClipChangedListener(listener)
         CopyAccessibilityService.onCopy = null
-        stopLogcat()
+        synchronized(readerLock) { stopLogcatLocked() }
     }
 
     private fun fire(source: String) {
@@ -79,24 +85,40 @@ class CaptureTriggers(
         onTrigger(source)
     }
 
-    private fun startLogcat() {
+    /**
+     * Each reader has its own generation: a reader being stopped can never touch the state of the one that
+     * replaced it, and its "stream closed" error on stop is expected, not a failure.
+     */
+    private fun startLogcatLocked() {
         val needle = "Denying clipboard access to ${app.packageName}"
         val myPid = android.os.Process.myPid()
+        val gen = ++generation
+        readerStartedAt = SystemClock.elapsedRealtime()
         logAccessActive = false
         logcatJob = scope.launch(Dispatchers.IO) {
-            val process = runCatching {
+            val process = try {
                 // -T 1: start at the newest entry. ClipboardService errors are the copy signal; ActivityTaskManager
                 // lines (activity starts, rare) only prove that Android approved access to other apps' logs.
                 ProcessBuilder(
                     "logcat", "-T", "1", "-v", "brief", "ClipboardService:E", "ActivityTaskManager:I", "*:S",
                 ).redirectErrorStream(true).start()
-            }.getOrNull() ?: return@launch
-            logcatProcess = process
+            } catch (e: Exception) {
+                EventLog.error("Copy detection: could not start the log reader", e)
+                return@launch
+            }
+            synchronized(readerLock) {
+                if (gen != generation) {
+                    process.destroy()
+                    return@launch
+                }
+                logcatProcess = process
+            }
             EventLog.add("Copy detection: log reader started (approve the prompt if Android shows one)")
             try {
                 process.inputStream.bufferedReader().use { reader ->
                     while (isActive) {
-                        val line = runInterruptible { reader.readLine() } ?: break
+                        val line = reader.readLine() ?: break
+                        if (gen != generation) break
                         if (!logAccessActive && pidOf(line).let { it != null && it != myPid }) {
                             logAccessActive = true
                             EventLog.add("Copy detection: active (automatic phone → PC)")
@@ -104,10 +126,18 @@ class CaptureTriggers(
                         if (line.contains(needle)) fire("logcat")
                     }
                 }
+            } catch (e: java.io.IOException) {
+                // The stream is closed when the reader is stopped; anything else is logged, never thrown.
+                if (gen == generation) EventLog.error("Copy detection: log reader failed", e)
             } finally {
                 process.destroy()
-                if (logAccessActive) EventLog.add("Copy detection: log reader stopped")
-                logAccessActive = false
+                synchronized(readerLock) {
+                    if (gen == generation) {
+                        if (logAccessActive) EventLog.add("Copy detection: log reader stopped")
+                        logAccessActive = false
+                        logcatProcess = null
+                    }
+                }
             }
         }
     }
@@ -120,7 +150,8 @@ class CaptureTriggers(
         return line.substring(open + 1, close).trim().toIntOrNull()
     }
 
-    private fun stopLogcat() {
+    private fun stopLogcatLocked() {
+        generation++ // the old reader sees this and exits quietly
         logcatProcess?.destroy() // unblocks readLine()
         logcatProcess = null
         logcatJob?.cancel()
@@ -130,5 +161,6 @@ class CaptureTriggers(
 
     private companion object {
         const val DEBOUNCE_MS = 300L
+        const val PROMPT_GRACE_MS = 15_000L
     }
 }
