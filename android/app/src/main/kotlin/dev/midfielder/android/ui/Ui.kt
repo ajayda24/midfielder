@@ -199,7 +199,14 @@ class Ui(val context: Context) {
         }
 
     /** M3 list item: leading view, one or two lines of text, trailing view; 56/72 dp tall. */
-    fun listRow(title: String, subtitle: String? = null, leading: View? = null, trailing: View? = null, onClick: (() -> Unit)? = null): LinearLayout =
+    fun listRow(
+        title: String,
+        subtitle: String? = null,
+        leading: View? = null,
+        trailing: View? = null,
+        below: View? = null,
+        onClick: (() -> Unit)? = null,
+    ): LinearLayout =
         horizontal().apply {
             minimumHeight = dp(if (subtitle == null) 56 else 72)
             setPadding(dp(4), dp(8), dp(4), dp(8))
@@ -210,6 +217,7 @@ class Ui(val context: Context) {
             val texts = vertical()
             texts.addView(text(title, M.style.TextAppearance_Material3_BodyLarge, onSurface))
             if (!subtitle.isNullOrEmpty()) texts.addView(text(subtitle, M.style.TextAppearance_Material3_BodyMedium, onSurfaceVariant))
+            if (below != null) texts.addView(below, wrap().apply { topMargin = dp(8) })
             addView(texts, weight())
             if (trailing != null) addView(trailing, wrap(12))
             if (onClick != null) {

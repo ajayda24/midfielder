@@ -96,10 +96,10 @@ class HomeTab(host: MainActivity) : Tab(host) {
 
         // Quick actions: 2 x 2 tonal tiles.
         val grid = GridLayout(host).apply { columnCount = 2 }
-        grid.addView(tile(R.drawable.ic_copy, "Send clipboard", "Paste it on your PC") { host.sendClipboardNow() }, cell(0))
-        grid.addView(tile(R.drawable.ic_upload, "Send files", "Photos, docs, anything") { host.pickFiles() }, cell(1))
-        grid.addView(tile(R.drawable.ic_folder, "Received", "Download/Midfielder") { FileActions.openFolder(host) }, cell(0))
-        grid.addView(tile(R.drawable.ic_qr, "Pair", "Connect a PC") { host.startScan() }, cell(1))
+        grid.addView(tile(R.drawable.ic_copy, "Clipboard", "Send it to your PC") { host.sendClipboardNow() }, cell(0))
+        grid.addView(tile(R.drawable.ic_upload, "Send files", "Photos, docs, more") { host.pickFiles() }, cell(1))
+        grid.addView(tile(R.drawable.ic_folder, "Received", "Open the folder") { FileActions.openFolder(host) }, cell(0))
+        grid.addView(tile(R.drawable.ic_qr, "Pair PC", "Scan a code") { host.startScan() }, cell(1))
         root.addView(grid, ui.matchWidth(12))
 
         // Live transfers.
@@ -149,7 +149,9 @@ class HomeTab(host: MainActivity) : Tab(host) {
     private fun tile(icon: Int, title: String, sub: String, onClick: () -> Unit): View {
         val box = ui.card(Ui.Card.FILLED, paddingDp = 16)
         box.body.addView(ui.iconBadge(icon, 44, ui.secondaryContainer, ui.onSecondaryContainer, cornerDp = 14))
-        box.body.addView(ui.oneLine(ui.title(title)).apply { setPadding(0, ui.dp(14), 0, 0) })
+        box.body.addView(ui.oneLine(ui.text(title, com.google.android.material.R.style.TextAppearance_Material3_TitleSmall, ui.onSurface)).apply {
+            setPadding(0, ui.dp(12), 0, 0)
+        })
         box.body.addView(ui.oneLine(ui.small(sub)))
         box.card.isClickable = true
         box.card.setOnClickListener { onClick() }

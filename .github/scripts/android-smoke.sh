@@ -58,6 +58,9 @@ mkdir -p screens
 DEBUG_APK=$(ls apk-debug/*.apk 2>/dev/null | head -1)
 if [ -n "$DEBUG_APK" ]; then
   adb install -r "$DEBUG_APK" | tail -1
+  # Without READ_LOGS, Android's log-access prompt doesn't cover the screenshots.
+  adb shell pm revoke dev.midfielder android.permission.READ_LOGS || true
+  adb shell am force-stop dev.midfielder
   adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --ez demo true > /dev/null
   sleep 6
   for tab in home files settings developer; do
@@ -65,10 +68,12 @@ if [ -n "$DEBUG_APK" ]; then
     sleep 3
     adb exec-out screencap -p > "screens/android-$API-$tab.png"
   done
-  # Home scrolled down (recent files and activity), and the gallery view.
+  # Home scrolled down (recent files and activity).
   adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab home > /dev/null
   sleep 2
-  adb shell input swipe 500 1600 500 500 300
+  SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $NF}')
+  W=${SIZE%x*}; H=${SIZE#*x}
+  adb shell input swipe $((W / 2)) $((H * 3 / 4)) $((W / 2)) $((H / 5)) 400
   sleep 2
   adb exec-out screencap -p > "screens/android-$API-home-scrolled.png"
   adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::debug build crashed"; adb logcat -d -b crash; exit 1; }

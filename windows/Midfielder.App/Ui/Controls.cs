@@ -69,10 +69,10 @@ internal sealed class PillButton : ThemedControl, IButtonControl
 
     public PillButton(string text, ButtonKind kind = ButtonKind.Tonal, string? glyph = null)
     {
+        Font = Theme.Strong(9.75f); // before Text: the size is measured with this font
         Text = text;
         Kind = kind;
         Glyph = glyph;
-        Font = Theme.Strong(9.75f);
         Cursor = Cursors.Hand;
         SetStyle(ControlStyles.Selectable | ControlStyles.StandardClick, true);
         TabStop = true;
@@ -111,6 +111,20 @@ internal sealed class PillButton : ThemedControl, IButtonControl
     {
         base.OnDpiChangedAfterParent(e);
         Size = GetPreferredSize(Size.Empty);
+    }
+
+    protected override void OnFontChanged(EventArgs e)
+    {
+        base.OnFontChanged(e);
+        Size = GetPreferredSize(Size.Empty);
+    }
+
+    /// <summary>The glyph changed (e.g. Gallery ⇄ List): re-measure.</summary>
+    public void SetLabel(string text, string? glyph)
+    {
+        Glyph = glyph;
+        Text = text; // re-measures and repaints
+        Parent?.PerformLayout();
     }
 
     private (Color Bg, Color Fg, Color Border) Colors() => Kind switch

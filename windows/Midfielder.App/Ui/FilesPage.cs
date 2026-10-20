@@ -32,7 +32,7 @@ internal sealed class FilesPage : Panel
         var title = Labels.Title("Files");
         var openFolder = new PillButton("Open folder", ButtonKind.Tonal, Theme.Glyph.Folder);
         openFolder.Click += (_, _) => Shell.OpenFolder(_host.Settings.ReceiveFolder);
-        _header = new HStack { Dock = DockStyle.Top, Fill = title, MinHeight = 48, MinFillWidth = 80 }.With(title, openFolder);
+        _header = new HStack { Dock = DockStyle.Top, Fill = title, MinHeight = 48, MinFillWidth = 80 }.With(title, _view, openFolder);
         var header = _header;
 
         _toolbar = new HStack { Dock = DockStyle.Top, MinHeight = 52, Spacing = 8, Wrap = true, MinFillWidth = 0, Padding = new Padding(0, 6, 0, 6) };
@@ -47,7 +47,7 @@ internal sealed class FilesPage : Panel
         var spacer = new Panel { BackColor = Color.Transparent, Width = 1 };
         toolbar.Controls.Add(spacer);
         toolbar.Fill = spacer;
-        toolbar.Controls.AddRange([_open, _reveal, _delete, _view]);
+        toolbar.Controls.AddRange([_open, _reveal, _delete]);
 
         _open.Click += (_, _) => { foreach (var r in _browser.Selected.Take(10)) Open(r); };
         _reveal.Click += (_, _) =>
@@ -122,9 +122,7 @@ internal sealed class FilesPage : Panel
     {
         s_gallery = on;
         _browser.Gallery = on;
-        _view.Text = on ? "List" : "Gallery";
-        _view.Glyph = on ? Theme.Glyph.List : Theme.Glyph.Grid;
-        _view.Invalidate();
+        _view.SetLabel(on ? "List" : "Gallery", on ? Theme.Glyph.List : Theme.Glyph.Grid);
     }
 
     private void Reload()

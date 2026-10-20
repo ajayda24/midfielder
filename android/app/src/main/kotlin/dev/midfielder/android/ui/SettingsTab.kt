@@ -89,7 +89,8 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                 step.run(host)
                 checklist.postDelayed({ renderChecklist() }, 3_000)
             }
-            checklist.addView(ui.listRow(step.label, step.detail, badge, action).indent())
+            // The action goes under the text so narrow phones keep a readable text column.
+            checklist.addView(ui.listRow(step.label, step.detail, badge, below = action).indent())
         }
     }
 
