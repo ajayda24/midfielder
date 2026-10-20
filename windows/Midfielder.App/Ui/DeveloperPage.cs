@@ -131,6 +131,7 @@ internal sealed class DeveloperPage : PageBase
             if (c == 0) _status.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var key = Fx.Caption(rows[i].Item1);
             key.Margin = new Thickness(c == 0 ? 0 : 24, 5, 14, 5);
+            key.VerticalAlignment = VerticalAlignment.Top;
             var value = new TextBox
             {
                 Text = rows[i].Item2,
@@ -143,7 +144,8 @@ internal sealed class DeveloperPage : PageBase
                 TextWrapping = TextWrapping.Wrap,
                 Padding = new Thickness(0),
                 Margin = new Thickness(0, 5, 0, 5),
-                VerticalAlignment = VerticalAlignment.Center,
+                // Rows grow with a long value in the other column; keep every pair on its first line.
+                VerticalAlignment = VerticalAlignment.Top,
                 Style = null,
             };
             Grid.SetRow(key, r);
