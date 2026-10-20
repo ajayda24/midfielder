@@ -32,6 +32,9 @@
     <!-- Both WPF and WinForms are referenced: no implicit global usings for either, so names never clash. -->
     <Using Remove="System.Windows.Forms" />
     <Using Remove="System.Drawing" />
+    <!-- UseWPF drops these from the implicit usings (System.IO.Path vs System.Windows.Shapes.Path); keep them. -->
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets\midfielder.ico" LogicalName="midfielder.ico" />
