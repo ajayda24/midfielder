@@ -5,12 +5,12 @@ namespace Midfielder.App.Ui;
 /// <summary>Connection, quick actions, drag-and-drop, live transfers and a small activity summary.</summary>
 internal sealed class HomePage : Page
 {
-    private readonly Label _phoneName = Labels.Make("", Theme.Strong(13f), Theme.Text);
-    private readonly Label _phoneStatus = Labels.Muted("", 10f);
+    private readonly Label _phoneName = Labels.Make("", Theme.Strong(13f), Theme.Text, singleLine: true);
+    private readonly Label _phoneStatus = Labels.Make("", Theme.Body(10f), Theme.Muted, singleLine: true);
     private readonly StatusDot _dot = new();
     private readonly PillButton _pair;
     private readonly Card _transfers = new() { Visible = false };
-    private readonly VStack _transferRows = new() { AutoHeight = true, Padding = Padding.Empty, Spacing = 14, BackColor = Theme.Surface };
+    private readonly VStack _transferRows = Inner(14);
     private readonly Label _todayClips = Labels.Make("0", Theme.Title(20f), Theme.PrimaryDark);
     private readonly Label _todayFiles = Labels.Make("0", Theme.Title(20f), Theme.PrimaryDark);
     private readonly Label _todayBytes = Labels.Make("0 B", Theme.Title(20f), Theme.PrimaryDark);
@@ -26,9 +26,10 @@ internal sealed class HomePage : Page
 
         // Connection card
         var conn = new Card();
-        var texts = new VStack { AutoHeight = true, Padding = Padding.Empty, Spacing = 4, BackColor = Theme.Surface };
+        var texts = Inner(4);
         texts.Controls.Add(_phoneName);
-        texts.Controls.Add(new HStack { Spacing = 6 }.With(_dot, _phoneStatus));
+        var statusRow = new HStack { Spacing = 6, Fill = _phoneStatus };
+        texts.Controls.Add(statusRow.With(_dot, _phoneStatus));
         _pair = new PillButton("Pair a phone", ButtonKind.Primary, Theme.Glyph.Link);
         _pair.Click += (_, _) => Host.ShowPairing();
         var head = new HStack { Fill = texts, Spacing = 16 };
@@ -42,7 +43,7 @@ internal sealed class HomePage : Page
         clip.Click += (_, _) => Host.SendClipboardNow();
         var folder = new PillButton("Received files", ButtonKind.Outline, Theme.Glyph.Folder);
         folder.Click += (_, _) => Shell.OpenFolder(Host.Settings.ReceiveFolder);
-        Controls.Add(new HStack().With(send, clip, folder));
+        Controls.Add(new HStack { Wrap = true }.With(send, clip, folder));
 
         var drop = new DropZone();
         drop.FilesDropped += files => Host.SendFiles(files);
@@ -55,9 +56,9 @@ internal sealed class HomePage : Page
         Controls.Add(_transfers);
 
         // Activity
-        var stats = new Card();
+        var stats = new Card { Spacing = 12 };
         stats.Controls.Add(Labels.Heading("Today"));
-        stats.Controls.Add(new HStack { Spacing = 48 }.With(Stat(_todayClips, "clips synced"), Stat(_todayFiles, "files"), Stat(_todayBytes, "moved")));
+        stats.Controls.Add(new HStack { Spacing = 24, Wrap = true }.With(Stat(_todayClips, "clips synced"), Stat(_todayFiles, "files"), Stat(_todayBytes, "moved")));
         stats.Controls.Add(_chart);
         stats.Controls.Add(_week);
         stats.Controls.Add(_allTime);
@@ -75,7 +76,8 @@ internal sealed class HomePage : Page
 
     private static Control Stat(Label value, string caption)
     {
-        var box = new VStack { AutoHeight = true, Padding = Padding.Empty, Spacing = 0, BackColor = Theme.Surface, Width = (int)(140 * value.DeviceDpi / 96f) };
+        var box = Inner(0);
+        box.Width = Measure.Px(value, 150);
         box.Controls.Add(value);
         box.Controls.Add(Labels.Muted(caption));
         return box;
@@ -143,11 +145,10 @@ internal sealed class HomePage : Page
 
     private Control Row(ActiveTransfer t)
     {
-        var box = new VStack { AutoHeight = true, Padding = Padding.Empty, Spacing = 6, BackColor = Theme.Surface };
-        var name = Labels.Make(t.Title, Theme.Strong(10f), Theme.Text, autoSize: false);
-        name.Height = (int)(22 * DeviceDpi / 96f);
-        var meta = Labels.Muted(Meta(t));
-        var texts = new VStack { AutoHeight = true, Padding = Padding.Empty, Spacing = 0, BackColor = Theme.Surface };
+        var box = Inner(6);
+        var name = Labels.Make(t.Title, Theme.Strong(10f), Theme.Text, singleLine: true);
+        var meta = Labels.Make(Meta(t), Theme.Body(9f), Theme.Muted, singleLine: true);
+        var texts = Inner(0);
         texts.Controls.Add(name);
         texts.Controls.Add(meta);
         var cancel = new PillButton("", ButtonKind.Subtle, Theme.Glyph.Cancel) { AccessibleName = "Cancel transfer" };

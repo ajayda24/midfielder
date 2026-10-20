@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Styles for views created in code (passed as defStyleAttr). -->
+    <attr name="mfFilledButtonStyle" format="reference" />
+    <attr name="mfTonalButtonStyle" format="reference" />
+    <attr name="mfOutlinedButtonStyle" format="reference" />
+    <attr name="mfTextButtonStyle" format="reference" />
+    <attr name="mfIconButtonStyle" format="reference" />
+    <attr name="mfFilterChipStyle" format="reference" />
+    <attr name="mfAssistChipStyle" format="reference" />
+    <attr name="mfElevatedCardStyle" format="reference" />
+    <attr name="mfFilledCardStyle" format="reference" />
+    <attr name="mfOutlinedCardStyle" format="reference" />
+</resources>

@@ -26,6 +26,10 @@ internal sealed partial class MainForm : Form
     private readonly Dictionary<string, NavItem> _nav = [];
     private readonly Label _navStatus = Labels.Muted("", 8.5f);
     private readonly Bitmap _logo;
+    private readonly Panel _navPanel;
+    private readonly Label _brandName;
+    private readonly ToolTip _tips = new();
+    private bool _compact;
     private Control? _page;
 
     public MainForm(IAppHost host, string page = HomeName)
@@ -38,25 +42,30 @@ internal sealed partial class MainForm : Form
         BackColor = Theme.Background;
         Font = Theme.Body(10f);
         ClientSize = new Size(Px(1040), Px(700));
-        MinimumSize = new Size(Px(820), Px(560));
+        MinimumSize = new Size(Px(640), Px(480));
         StartPosition = FormStartPosition.CenterScreen;
         AllowDrop = true;
 
-        var nav = new Panel { Dock = DockStyle.Left, Width = Px(220), BackColor = Theme.Surface, Padding = new Padding(0, Px(20), 0, Px(16)) };
+        RestoreWindowBounds();
+
+        _navPanel = new Panel { Dock = DockStyle.Left, Width = Px(220), BackColor = Theme.Surface, Padding = new Padding(0, Px(20), 0, Px(16)) };
+        var nav = _navPanel;
         nav.Paint += (_, e) =>
         {
             using var pen = new Pen(Theme.Outline);
             e.Graphics.DrawLine(pen, nav.Width - 1, 0, nav.Width - 1, nav.Height);
         };
-        var brand = new HStack { Dock = DockStyle.Top, MinHeight = 56, Padding = new Padding(20, 0, 0, 0), Spacing = 10 };
+        var brand = new HStack { Dock = DockStyle.Top, Height = Px(56), MinHeight = 56, Padding = new Padding(20, 0, 0, 0), Spacing = 10 };
         _logo = AppIcon.Logo(64);
         var logo = new PictureBox { Image = _logo, SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(Px(32), Px(32)), BackColor = Color.Transparent };
-        brand.With(logo, Labels.Make("Midfielder", Theme.Strong(13f), Theme.Text));
+        _brandName = Labels.Make("Midfielder", Theme.Strong(13f), Theme.Text, singleLine: true);
+        brand.With(logo, _brandName);
         var items = new VStack { Dock = DockStyle.Fill, Padding = new Padding(0, 12, 0, 0), Spacing = 4, BackColor = Theme.Surface };
         foreach (var (name, label, glyph) in Pages)
         {
             var item = new NavItem(label, glyph) { BackColor = Theme.Surface };
             item.Click += (_, _) => ShowPage(name);
+            _tips.SetToolTip(item, label);
             _nav[name] = item;
             items.Controls.Add(item);
         }
@@ -95,6 +104,7 @@ internal sealed partial class MainForm : Form
             _ => new HomePage(_host),
         };
         page.Dock = DockStyle.Fill;
+        _nav[name].Focus(); // keep focus out of the page so it opens at the top
         _content.SuspendLayout();
         _content.Controls.Add(page);
         if (old is not null)
@@ -105,6 +115,40 @@ internal sealed partial class MainForm : Form
         _content.ResumeLayout();
         _page = page;
         (page as Page)?.Activate();
+    }
+
+    /// <summary>Narrow windows get an icon-only navigation rail.</summary>
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_nav.Count == 0) return;
+        bool compact = ClientSize.Width < Px(900);
+        if (compact == _compact) return;
+        _compact = compact;
+        _navPanel.Width = compact ? Px(76) : Px(220);
+        _brandName.Visible = !compact;
+        foreach (var item in _nav.Values) item.Compact = compact;
+        UpdateNavStatus();
+    }
+
+    private void RestoreWindowBounds()
+    {
+        var saved = _host.Settings.Window;
+        if (saved is null || saved.Length != 5) return;
+        var r = new Rectangle(saved[0], saved[1], Math.Max(saved[2], MinimumSize.Width), Math.Max(saved[3], MinimumSize.Height));
+        // Only if it is still on a connected monitor.
+        if (!Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(r) && Rectangle.Intersect(s.WorkingArea, r).Width > Px(200))) return;
+        StartPosition = FormStartPosition.Manual;
+        Bounds = r;
+        if (saved[4] == 1) WindowState = FormWindowState.Maximized;
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        var r = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        _host.Settings.Window = [r.X, r.Y, r.Width, r.Height, WindowState == FormWindowState.Maximized ? 1 : 0];
+        _host.SaveSettings();
+        base.OnFormClosing(e);
     }
 
     private void OnStatus()
@@ -121,7 +165,8 @@ internal sealed partial class MainForm : Form
 
     private void UpdateNavStatus()
     {
-        _navStatus.Text = "● " + _host.StatusText;
+        _navStatus.Text = _compact ? "●" : "● " + _host.StatusText;
+        _tips.SetToolTip(_navStatus, _host.StatusText);
         _navStatus.ForeColor = _host.ConnectedDevices.Count > 0 ? Theme.Primary : Theme.Muted;
     }
 
@@ -157,6 +202,7 @@ internal sealed partial class MainForm : Form
             _page?.Dispose();
             _page = null;
             _logo.Dispose();
+            _tips.Dispose();
         }
         base.Dispose(disposing);
     }

@@ -85,6 +85,10 @@ internal sealed class Settings
     public string ReceiveFolder { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Midfielder");
     public int Port { get; set; } = 47810;
+    /// <summary>Main window x, y, width, height, maximized (0/1); null until it has been closed once.</summary>
+#pragma warning disable CA1819 // a plain settings DTO for JSON
+    public int[]? Window { get; set; }
+#pragma warning restore CA1819
 }
 
 internal sealed record StoredDevice(string Fingerprint, string Name, int Kind, string? LastAddress);

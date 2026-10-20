@@ -19,10 +19,18 @@ abstract class Tab(protected val host: MainActivity) {
 
     open fun stop() {}
 
+    /** Back press: return true if the tab handled it (e.g. leaving selection mode). */
+    open fun onBack(): Boolean = false
+
     protected suspend fun engine(): SyncEngine {
         while (true) {
             SyncEngine.current?.let { return it }
             delay(100)
         }
+    }
+
+    /** Standard page container: 16 dp side margins, room at the bottom. */
+    protected fun page(): android.widget.LinearLayout = ui.vertical().apply {
+        setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(24))
     }
 }

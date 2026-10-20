@@ -1,9 +1,8 @@
 package dev.midfielder.android
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
 import android.app.RecoverableSecurityException
+import android.content.pm.ApplicationInfo
 import android.content.Intent
 import android.content.IntentSender
 import android.content.pm.PackageManager
@@ -17,11 +16,15 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.navigation.NavigationBarView
+import com.google.android.material.snackbar.Snackbar
 import dev.midfielder.android.ui.DeveloperTab
 import dev.midfielder.android.ui.FilesTab
 import dev.midfielder.android.ui.HomeTab
-import dev.midfielder.android.ui.Palette
 import dev.midfielder.android.ui.SettingsTab
 import dev.midfielder.android.ui.Tab
 import dev.midfielder.android.ui.Ui
@@ -38,7 +41,7 @@ import kotlinx.coroutines.launch
  * The app's only regular screen: four tabs (Home, Files, Settings, Developer) over a bottom bar. Framework views
  * only. A tab's view and its coroutines exist only while it's shown and the activity is resumed.
  */
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     lateinit var ui: Ui
         private set
 
@@ -48,7 +51,7 @@ class MainActivity : Activity() {
     private var tabName = TAB_HOME
     private var resumed = false
     private lateinit var content: FrameLayout
-    private lateinit var nav: LinearLayout
+    private lateinit var nav: BottomNavigationView
     private val pendingDelete = ArrayList<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,6 +61,22 @@ class MainActivity : Activity() {
         setContentView(buildFrame())
         showTab(savedInstanceState?.getString(STATE_TAB) ?: intent.getStringExtra(EXTRA_TAB) ?: TAB_HOME)
         handleIntent(intent)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when {
+                    tab?.onBack() == true -> Unit
+                    tabName != TAB_HOME -> showTab(TAB_HOME)
+                    else -> {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                        isEnabled = true
+                    }
+                }
+            }
+        })
+        if (intent.getBooleanExtra(EXTRA_DEMO, false) && (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            Demo.seed(this)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -110,59 +129,38 @@ class MainActivity : Activity() {
     private fun buildFrame(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Palette.BACKGROUND)
+            setBackgroundColor(ui.surface)
         }
         content = FrameLayout(this)
         root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        nav = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Palette.SURFACE)
-            elevation = ui.dpf(8f)
+        nav = BottomNavigationView(this).apply {
+            labelVisibilityMode = NavigationBarView.LABEL_VISIBILITY_LABELED
+            setBackgroundColor(ui.container)
+            itemActiveIndicatorColor = android.content.res.ColorStateList.valueOf(ui.primaryContainer)
+            TABS.forEachIndexed { i, (_, label, icon) -> menu.add(0, i, i, label).setIcon(icon) }
+            setOnItemSelectedListener { item ->
+                showTab(TABS[item.itemId].first)
+                true
+            }
         }
         root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        // Android 15+ draws edge to edge: keep content clear of the status bar and the bar clear of gestures.
+        // Android 15+ draws edge to edge: keep content clear of the status bar (the nav bar pads itself).
         root.setOnApplyWindowInsetsListener { v, insets ->
-            val (top, bottom) = if (Build.VERSION.SDK_INT >= 30) {
-                insets.getInsets(WindowInsets.Type.systemBars()).let { it.top to it.bottom }
+            val top = if (Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.systemBars()).top
             } else {
                 @Suppress("DEPRECATION")
-                insets.systemWindowInsetTop to insets.systemWindowInsetBottom
+                insets.systemWindowInsetTop
             }
             v.setPadding(0, top, 0, 0)
-            nav.setPadding(0, ui.dp(6), 0, ui.dp(6) + bottom)
             insets
         }
         return root
     }
 
     private fun renderNav() {
-        nav.removeAllViews()
-        for ((name, label, icon) in TABS) {
-            val selected = name == tabName
-            val item = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-                setPadding(0, ui.dp(4), 0, ui.dp(4))
-                background = ui.pressable(null, 16)
-                contentDescription = label
-                setOnClickListener { showTab(name) }
-            }
-            val pill = FrameLayout(this).apply {
-                if (selected) background = ui.rounded(Palette.HIGHLIGHT_STRONG, 16)
-                addView(
-                    ui.icon(icon, if (selected) Palette.PRIMARY_DARK else Palette.MUTED, 22),
-                    FrameLayout.LayoutParams(ui.dp(22), ui.dp(22), Gravity.CENTER),
-                )
-            }
-            item.addView(pill, LinearLayout.LayoutParams(ui.dp(60), ui.dp(32)))
-            item.addView(
-                ui.text(label, 12f, if (selected) Palette.PRIMARY_DARK else Palette.MUTED, bold = selected).apply {
-                    gravity = Gravity.CENTER
-                    setPadding(0, ui.dp(4), 0, 0)
-                },
-            )
-            nav.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
+        val index = TABS.indexOfFirst { it.first == tabName }
+        if (index >= 0 && nav.selectedItemId != index) nav.selectedItemId = index
     }
 
     fun showTab(name: String) {
@@ -232,7 +230,7 @@ class MainActivity : Activity() {
     }
 
     fun confirm(title: String, message: String, positive: String, action: () -> Unit) {
-        AlertDialog.Builder(this).setTitle(title).setMessage(message)
+        MaterialAlertDialogBuilder(this).setTitle(title).setMessage(message)
             .setPositiveButton(positive) { _, _ -> action() }
             .setNegativeButton("Cancel", null)
             .show()
@@ -291,7 +289,7 @@ class MainActivity : Activity() {
             toast("That isn't a Midfielder pairing code")
             return
         }
-        AlertDialog.Builder(this)
+        MaterialAlertDialogBuilder(this)
             .setTitle("Pair with ${invite.name}?")
             .setMessage("Check that your PC shows this fingerprint:\n\n${invite.fingerprint.display()}")
             .setPositiveButton("Pair") { _, _ -> pair(invite) }
@@ -343,11 +341,20 @@ class MainActivity : Activity() {
         (tab as? HomeTab)?.refreshSetup()
     }
 
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+    private fun toast(s: String) = snack(s)
+
+    /** Short message above the navigation bar, with an optional action (e.g. Undo). */
+    fun snack(text: String, action: String? = null, onAction: (() -> Unit)? = null) {
+        val bar = Snackbar.make(content, text, Snackbar.LENGTH_LONG).setAnchorView(nav)
+        if (action != null && onAction != null) bar.setAction(action) { onAction() }
+        bar.show()
+    }
 
     companion object {
         const val EXTRA_TAB = "tab"
         const val EXTRA_OPEN_RECORD = "open_record"
+        /** Debug builds only: fill history with sample files (for screenshots). */
+        const val EXTRA_DEMO = "demo"
         const val TAB_HOME = "home"
         const val TAB_FILES = "files"
         const val TAB_SETTINGS = "settings"

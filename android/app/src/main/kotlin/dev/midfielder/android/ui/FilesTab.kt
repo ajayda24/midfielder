@@ -1,21 +1,18 @@
 package dev.midfielder.android.ui
 
-import android.content.Context
-import android.content.res.ColorStateList
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AbsListView
-import android.widget.BaseAdapter
 import android.widget.FrameLayout
-import android.widget.GridView
-import android.widget.HorizontalScrollView
-import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.PopupMenu
 import android.widget.TextView
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.chip.ChipGroup
+import com.google.android.material.imageview.ShapeableImageView
 import dev.midfielder.android.FileActions
 import dev.midfielder.android.HistoryStore
 import dev.midfielder.android.MainActivity
@@ -27,66 +24,117 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Calendar
 
-/** History of sent and received files as a list or a gallery grid. Tap opens, the ⋮ menu shares or deletes. */
+/**
+ * Sent and received files, grouped by day, as a list or a gallery grid. Tap opens; long-press starts
+ * multi-select (share / delete); the ⋮ menu has the rest.
+ */
 class FilesTab(host: MainActivity) : Tab(host) {
     private enum class Filter(val label: String) { ALL("All"), RECEIVED("Received"), SENT("Sent"), IMAGES("Images") }
 
-    private val store = HistoryStore.get(host)
-    private var thumbs: ThumbnailLoader? = null
-    private var items: List<TransferRecord> = emptyList()
-    private lateinit var chips: LinearLayout
-    private lateinit var content: FrameLayout
-    private lateinit var empty: View
-    private lateinit var toggle: ImageView
-    private var listView: AbsListView? = null
-
-    private val adapter = object : BaseAdapter() {
-        override fun getCount() = items.size
-        override fun getItem(position: Int) = items[position]
-        override fun getItemId(position: Int) = items[position].id.hashCode().toLong()
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
-            if (gallery) tile(items[position], convertView as? TileView) else row(items[position], convertView as? RowView)
+    private sealed class Item {
+        data class Header(val title: String) : Item()
+        data class Row(val record: TransferRecord) : Item()
     }
 
-    override fun build(): View {
-        val root = ui.vertical().apply { setPadding(ui.dp(16), ui.dp(8), ui.dp(16), 0) }
-        val header = ui.horizontal()
-        header.addView(ui.title("Files"), ui.weight())
-        header.addView(ui.smallButton("Open folder") { FileActions.openFolder(host) })
-        toggle = ui.iconButton(R.drawable.ic_grid, "Gallery view", Palette.PRIMARY) { setGallery(!gallery) }
-        header.addView(toggle)
-        header.addView(ui.iconButton(R.drawable.ic_more, "More", Palette.MUTED) {}.apply { setOnClickListener { headerMenu(it) } })
-        root.addView(header)
+    private val store = HistoryStore.get(host)
+    private var thumbs: ThumbnailLoader? = null
+    private var items: List<Item> = emptyList()
+    private val selected = LinkedHashSet<String>()
+    private lateinit var list: RecyclerView
+    private lateinit var grid: GridLayoutManager
+    private lateinit var empty: View
+    private lateinit var toggle: MaterialButton
+    private lateinit var titleBar: View
+    private lateinit var selectBar: LinearLayout
+    private lateinit var selectCount: TextView
 
-        chips = ui.horizontal()
+    private val columns: Int get() = if (host.resources.configuration.screenWidthDp >= 600) 4 else 3
+
+    override fun build(): View {
+        val root = ui.vertical()
+
+        // Title bar, and the selection bar that replaces it in multi-select.
+        titleBar = ui.horizontal().apply {
+            setPadding(ui.dp(20), ui.dp(12), ui.dp(8), ui.dp(4))
+            addView(ui.headline("Files"), ui.weight())
+            toggle = ui.iconButton(R.drawable.ic_grid, "Gallery view", ui.primary) { setGallery(!gallery) }
+            addView(toggle)
+            addView(ui.iconButton(R.drawable.ic_more, "More") { headerMenu(it) })
+        }
+        root.addView(titleBar)
+        selectBar = ui.horizontal().apply {
+            setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8))
+            background = ui.pill(ui.secondaryContainer, 0)
+            visibility = View.GONE
+            addView(ui.iconButton(R.drawable.ic_close, "Cancel selection", ui.onSecondaryContainer) { clearSelection() })
+            selectCount = ui.text("", com.google.android.material.R.style.TextAppearance_Material3_TitleMedium, ui.onSecondaryContainer)
+            addView(selectCount, ui.weight(1f, 4))
+            addView(ui.iconButton(R.drawable.ic_share, "Share", ui.onSecondaryContainer) {
+                FileActions.share(host, selectedRecords().filter { r -> FileActions.uriOf(r) != null })
+            })
+            addView(ui.iconButton(R.drawable.ic_delete, "Delete", ui.onSecondaryContainer) { deleteSelected() })
+        }
+        root.addView(selectBar, ui.matchWidth(0))
+
+        val chips = ChipGroup(host).apply {
+            isSingleSelection = true
+            isSelectionRequired = true
+            isSingleLine = true
+        }
+        val ids = HashMap<Int, Filter>()
+        for (f in Filter.entries) {
+            val chip = ui.filterChip(f.label, f == filter)
+            ids[chip.id] = f
+            chips.addView(chip)
+        }
+        chips.setOnCheckedStateChangeListener { _, checked ->
+            checked.firstOrNull()?.let { ids[it] }?.let {
+                filter = it
+                reload()
+            }
+        }
         root.addView(
-            HorizontalScrollView(host).apply {
+            android.widget.HorizontalScrollView(host).apply {
                 isHorizontalScrollBarEnabled = false
+                setPadding(ui.dp(16), 0, ui.dp(16), 0)
+                clipToPadding = false
                 addView(chips)
             },
-            ui.matchWidth(4),
+            ui.matchWidth(0),
         )
 
-        content = FrameLayout(host)
+        val content = FrameLayout(host)
+        grid = GridLayoutManager(host, if (gallery) columns else 1)
+        grid.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+            override fun getSpanSize(position: Int) = if (items.getOrNull(position) is Item.Header) grid.spanCount else 1
+        }
+        list = RecyclerView(host).apply {
+            layoutManager = grid
+            adapter = this@FilesTab.adapter
+            clipToPadding = false
+            setPadding(ui.dp(12), ui.dp(4), ui.dp(12), ui.dp(24))
+            setHasFixedSize(true)
+        }
+        content.addView(list, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         empty = ui.vertical().apply {
             gravity = Gravity.CENTER
-            addView(ui.iconBadge(R.drawable.ic_folder, 64))
-            addView(ui.text("No files yet", 17f, bold = true).apply { setPadding(0, ui.dp(16), 0, ui.dp(4)) })
-            addView(ui.text("Files you send or receive show up here.\nShare anything to \"Send to PC\" to start.", 14f, Palette.MUTED).apply {
+            setPadding(ui.dp(32), 0, ui.dp(32), ui.dp(48))
+            addView(ui.iconBadge(R.drawable.ic_folder, 88, ui.secondaryContainer, ui.onSecondaryContainer))
+            addView(ui.titleLarge("No files yet").apply { setPadding(0, ui.dp(20), 0, ui.dp(6)) })
+            addView(ui.supporting("Files you send or receive show up here. Share anything and pick your PC to start.").apply {
                 gravity = Gravity.CENTER
             })
         }
         content.addView(empty, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = ui.dp(8) })
-        renderChips()
-        setGallery(gallery)
+        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        updateToggle()
         return root
     }
 
     override fun start(scope: CoroutineScope) {
         thumbs = ThumbnailLoader(host)
-        adapter.notifyDataSetChanged()
         scope.launch { store.version.collect { reload() } }
         // Drop entries for files deleted in other apps (one batched query, off the main thread).
         scope.launch {
@@ -102,69 +150,120 @@ class FilesTab(host: MainActivity) : Tab(host) {
         thumbs = null
     }
 
+    override fun onBack(): Boolean {
+        if (selected.isEmpty()) return false
+        clearSelection()
+        return true
+    }
+
+    // ---------------------------------------------------------------------------------------------
+
     private fun reload() {
         val all = store.records()
-        items = when (filter) {
+        val records = when (filter) {
             Filter.ALL -> all
             Filter.RECEIVED -> all.filter { it.direction == Direction.RECEIVED }
             Filter.SENT -> all.filter { it.direction == Direction.SENT }
             Filter.IMAGES -> all.filter { it.isImage }
         }
-        empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
-        listView?.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+        selected.retainAll(records.map { it.id }.toSet())
+        items = grouped(records)
+        empty.visibility = if (records.isEmpty()) View.VISIBLE else View.GONE
+        list.visibility = if (records.isEmpty()) View.GONE else View.VISIBLE
         adapter.notifyDataSetChanged()
+        updateSelectionBar()
     }
 
-    private fun renderChips() {
-        chips.removeAllViews()
-        for (f in Filter.entries) {
-            chips.addView(
-                ui.chip(f.label, f == filter) {
-                    filter = f
-                    renderChips()
-                    reload()
-                },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = ui.dp(8) },
-            )
+    private fun grouped(records: List<TransferRecord>): List<Item> {
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0); cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+        val today = cal.timeInMillis
+        val yesterday = today - 86_400_000L
+        val week = today - 6 * 86_400_000L
+        val out = ArrayList<Item>(records.size + 4)
+        var last: String? = null
+        for (r in records) {
+            val section = when {
+                r.timeMs >= today -> "Today"
+                r.timeMs >= yesterday -> "Yesterday"
+                r.timeMs >= week -> "This week"
+                else -> "Earlier"
+            }
+            if (section != last) {
+                out += Item.Header(section)
+                last = section
+            }
+            out += Item.Row(r)
         }
+        return out
     }
 
     private fun setGallery(on: Boolean) {
         gallery = on
-        toggle.setImageResource(if (on) R.drawable.ic_list else R.drawable.ic_grid)
-        toggle.contentDescription = if (on) "List view" else "Gallery view"
-        listView?.let { content.removeView(it) }
-        val view: AbsListView = if (on) {
-            GridView(host).apply {
-                numColumns = 3
-                stretchMode = GridView.STRETCH_COLUMN_WIDTH
-                horizontalSpacing = ui.dp(6)
-                verticalSpacing = ui.dp(6)
-            }
-        } else {
-            ListView(host).apply {
-                divider = null
-                dividerHeight = 0
-            }
+        grid.spanCount = if (on) columns else 1
+        updateToggle()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun updateToggle() {
+        toggle.setIconResource(if (gallery) R.drawable.ic_list else R.drawable.ic_grid)
+        toggle.contentDescription = if (gallery) "List view" else "Gallery view"
+    }
+
+    private fun selectedRecords(): List<TransferRecord> =
+        items.mapNotNull { (it as? Item.Row)?.record }.filter { it.id in selected }
+
+    private fun toggleSelection(r: TransferRecord) {
+        if (!selected.remove(r.id)) selected += r.id
+        adapter.notifyDataSetChanged()
+        updateSelectionBar()
+    }
+
+    private fun clearSelection() {
+        selected.clear()
+        adapter.notifyDataSetChanged()
+        updateSelectionBar()
+    }
+
+    private fun updateSelectionBar() {
+        val on = selected.isNotEmpty()
+        selectBar.visibility = if (on) View.VISIBLE else View.GONE
+        titleBar.visibility = if (on) View.GONE else View.VISIBLE
+        selectCount.text = "${selected.size} selected"
+    }
+
+    private fun deleteSelected() {
+        val records = selectedRecords()
+        if (records.isEmpty()) return
+        val onPhone = records.filter { it.direction == Direction.RECEIVED && FileActions.uriOf(it) != null }
+        val others = records - onPhone.toSet()
+        val what = if (records.size == 1) "\"${records[0].name}\"" else "${records.size} files"
+        host.confirm(
+            "Delete $what?",
+            if (onPhone.isNotEmpty()) "Received files are removed from Download/Midfielder. Sent files only leave this list."
+            else "They are removed from this list. The files themselves stay where they are.",
+            "Delete",
+        ) {
+            if (onPhone.isNotEmpty()) host.deleteReceived(onPhone)
+            if (others.isNotEmpty()) store.remove(others.map { it.id })
+            clearSelection()
         }
-        view.apply {
-            clipToPadding = false
-            setPadding(0, 0, 0, ui.dp(16))
-            selector = ui.rounded(Palette.HIGHLIGHT, 12)
-            adapter = this@FilesTab.adapter
-            setOnItemClickListener { _, _, pos, _ -> FileActions.open(host, items[pos]) }
-            setOnItemLongClickListener { _, v, pos, _ ->
-                itemMenu(v, items[pos])
-                true
-            }
-        }
-        content.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        listView = view
-        reload()
+    }
+
+    private fun removeWithUndo(records: List<TransferRecord>) {
+        store.remove(records.map { it.id })
+        host.snack(if (records.size == 1) "Removed from list" else "${records.size} removed from list", "Undo") { store.restore(records) }
     }
 
     private fun headerMenu(anchor: View) {
         PopupMenu(host, anchor).apply {
+            menu.add("Open folder").setOnMenuItemClickListener { FileActions.openFolder(host); true }
+            menu.add("Select all").setOnMenuItemClickListener {
+                items.forEach { if (it is Item.Row) selected += it.record.id }
+                adapter.notifyDataSetChanged()
+                updateSelectionBar()
+                true
+            }
             menu.add("Clear history").setOnMenuItemClickListener {
                 host.confirm("Clear the list?", "Files stay on your phone; only the history is cleared.", "Clear") { store.clearHistory() }
                 true
@@ -187,98 +286,155 @@ class FilesTab(host: MainActivity) : Tab(host) {
                     true
                 }
             }
-            menu.add("Remove from list").setOnMenuItemClickListener { store.remove(listOf(r.id)); true }
+            menu.add("Remove from list").setOnMenuItemClickListener { removeWithUndo(listOf(r)); true }
+            menu.add("Select").setOnMenuItemClickListener { toggleSelection(r); true }
             show()
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Rows and tiles
+    // Adapter
 
-    private inner class RowView(context: Context) : LinearLayout(context) {
-        val thumb = ImageView(context)
-        val name: TextView = ui.text("", 15f, bold = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.MIDDLE }
-        val meta: TextView = ui.text("", 12f, Palette.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
-        val more: ImageView = ui.iconButton(R.drawable.ic_more, "More", Palette.MUTED) {}
-        var record: TransferRecord? = null
+    private class Holder(view: View) : RecyclerView.ViewHolder(view)
+
+    private val adapter = object : RecyclerView.Adapter<Holder>() {
+        override fun getItemCount() = items.size
+
+        override fun getItemViewType(position: Int) = when {
+            items[position] is Item.Header -> 0
+            gallery -> 2
+            else -> 1
+        }
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder = Holder(
+            when (viewType) {
+                0 -> ui.text("", com.google.android.material.R.style.TextAppearance_Material3_TitleSmall, ui.primary).apply {
+                    setPadding(ui.dp(8), ui.dp(16), ui.dp(8), ui.dp(8))
+                    layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                }
+                2 -> TileView()
+                else -> RowView()
+            },
+        )
+
+        override fun onBindViewHolder(holder: Holder, position: Int) {
+            when (val item = items[position]) {
+                is Item.Header -> (holder.itemView as TextView).text = item.title
+                is Item.Row -> when (val v = holder.itemView) {
+                    is RowView -> v.bind(item.record)
+                    is TileView -> v.bind(item.record)
+                }
+            }
+        }
+    }
+
+    private fun click(r: TransferRecord) {
+        if (selected.isNotEmpty()) toggleSelection(r) else FileActions.open(host, r)
+    }
+
+    private inner class RowView : LinearLayout(host) {
+        private val thumb = ShapeableImageView(host).apply {
+            shapeAppearanceModel = shapeAppearanceModel.toBuilder().setAllCornerSizes(ui.dpf(12f)).build()
+        }
+        private val badge = ui.iconBadge(R.drawable.ic_download, 20, ui.containerLowest, ui.primary)
+        private val check = ui.iconBadge(R.drawable.ic_check, 24, ui.primary, ui.onPrimary)
+        private val name: TextView = ui.oneLine(ui.text("", com.google.android.material.R.style.TextAppearance_Material3_BodyLarge, ui.onSurface), TextUtils.TruncateAt.MIDDLE)
+        private val meta: TextView = ui.oneLine(ui.small(""))
+        private val more = ui.iconButton(R.drawable.ic_more, "More") { v -> record?.let { itemMenu(v, it) } }
+        private var record: TransferRecord? = null
 
         init {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(ui.dp(4), ui.dp(8), 0, ui.dp(8))
-            thumb.scaleType = ImageView.ScaleType.CENTER_CROP
-            thumb.clipToOutline = true
-            addView(thumb, LayoutParams(ui.dp(52), ui.dp(52)))
+            minimumHeight = ui.dp(76)
+            setPadding(ui.dp(8), ui.dp(8), ui.dp(4), ui.dp(8))
+            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = ui.dp(2)
+            }
+            val frame = FrameLayout(host)
+            frame.addView(thumb, FrameLayout.LayoutParams(ui.dp(56), ui.dp(56)))
+            frame.addView(badge, FrameLayout.LayoutParams(ui.dp(20), ui.dp(20), Gravity.BOTTOM or Gravity.END))
+            frame.addView(check, FrameLayout.LayoutParams(ui.dp(24), ui.dp(24), Gravity.CENTER))
+            addView(frame, LayoutParams(ui.dp(60), ui.dp(60)))
             val texts = ui.vertical().apply { setPadding(ui.dp(14), 0, ui.dp(4), 0) }
             texts.addView(name)
             texts.addView(meta)
             addView(texts, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(more)
-            more.isFocusable = false
-            more.setOnClickListener { record?.let { itemMenu(more, it) } }
+            isClickable = true
+            setOnClickListener { record?.let(::click) }
+            setOnLongClickListener {
+                record?.let(::toggleSelection)
+                true
+            }
+        }
+
+        fun bind(r: TransferRecord) {
+            record = r
+            name.text = r.name
+            val dir = if (r.direction == Direction.SENT) "To ${r.peer}" else "From ${r.peer}"
+            val state = when (r.status) {
+                RecordStatus.DONE -> ""
+                RecordStatus.FAILED -> " · Failed"
+                RecordStatus.CANCELLED -> " · Cancelled"
+            }
+            meta.text = "${Format.bytes(r.size)} · $dir · ${Format.time(r.timeMs)}$state"
+            meta.setTextColor(if (r.status == RecordStatus.DONE) ui.onSurfaceVariant else ui.errorColor)
+            (badge as? FrameLayout)?.getChildAt(0)?.let {
+                (it as android.widget.ImageView).setImageResource(if (r.direction == Direction.SENT) R.drawable.ic_upload else R.drawable.ic_download)
+            }
+            val isSelected = r.id in selected
+            check.visibility = if (isSelected) View.VISIBLE else View.GONE
+            background = if (isSelected) ui.pill(ui.secondaryContainer, 16) else ui.ripple()
+            more.visibility = if (selected.isEmpty()) View.VISIBLE else View.INVISIBLE
+            Thumbs.bind(ui, thumb, r, thumbs, ui.dp(56))
         }
     }
 
-    private fun row(r: TransferRecord, recycled: RowView?): View {
-        val v = recycled ?: RowView(host)
-        v.record = r
-        v.name.text = r.name
-        val dir = if (r.direction == Direction.SENT) "↑ to ${r.peer}" else "↓ from ${r.peer}"
-        val state = when (r.status) {
-            RecordStatus.DONE -> ""
-            RecordStatus.FAILED -> " · failed"
-            RecordStatus.CANCELLED -> " · cancelled"
+    private inner class TileView : FrameLayout(host) {
+        private val thumb = ShapeableImageView(host).apply {
+            shapeAppearanceModel = shapeAppearanceModel.toBuilder().setAllCornerSizes(ui.dpf(14f)).build()
         }
-        v.meta.text = "$dir · ${Format.bytes(r.size)} · ${Format.time(r.timeMs)}$state"
-        v.meta.setTextColor(if (r.status == RecordStatus.DONE) Palette.MUTED else Palette.DANGER)
-        bindThumb(v.thumb, r, ui.dp(52))
-        return v
-    }
-
-    private inner class TileView(context: Context) : FrameLayout(context) {
-        val thumb = ImageView(context)
-        val label: TextView = ui.text("", 11f, Palette.MUTED).apply {
+        private val label: TextView = ui.small("").apply {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.MIDDLE
             gravity = Gravity.CENTER
-            setPadding(ui.dp(6), 0, ui.dp(6), ui.dp(6))
+            setPadding(ui.dp(8), 0, ui.dp(8), ui.dp(10))
         }
+        private val check = ui.iconBadge(R.drawable.ic_check, 26, ui.primary, ui.onPrimary)
+        private val video = ui.iconBadge(R.drawable.ic_play, 32, 0x99000000.toInt(), 0xFFFFFFFF.toInt())
+        private var record: TransferRecord? = null
 
         init {
-            thumb.scaleType = ImageView.ScaleType.CENTER_CROP
+            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4))
+            }
             addView(thumb, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(label, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
-            background = ui.rounded(Palette.HIGHLIGHT, 12)
-            clipToOutline = true
+            addView(video, LayoutParams(ui.dp(32), ui.dp(32), Gravity.CENTER))
+            addView(check, LayoutParams(ui.dp(26), ui.dp(26), Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(8), ui.dp(8), 0) })
+            isClickable = true
+            foreground = ui.ripple()
+            setOnClickListener { record?.let(::click) }
+            setOnLongClickListener {
+                record?.let(::toggleSelection)
+                true
+            }
         }
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) = super.onMeasure(widthMeasureSpec, widthMeasureSpec)
-    }
 
-    private fun tile(r: TransferRecord, recycled: TileView?): View {
-        val v = recycled ?: TileView(host)
-        v.label.text = if (r.isImage) "" else r.name
-        v.label.visibility = if (r.isImage) View.GONE else View.VISIBLE
-        bindThumb(v.thumb, r, ui.dp(120))
-        return v
-    }
-
-    private fun bindThumb(view: ImageView, r: TransferRecord, sizePx: Int) {
-        view.background = ui.rounded(Palette.HIGHLIGHT, 12)
-        val fallback = {
-            view.setImageResource(R.drawable.ic_file)
-            view.imageTintList = ColorStateList.valueOf(Palette.PRIMARY)
-            view.scaleType = ImageView.ScaleType.CENTER
+        fun bind(r: TransferRecord) {
+            record = r
+            val isMedia = r.isImage || r.mime.startsWith("video/")
+            label.text = if (isMedia) "" else r.name
+            label.visibility = if (isMedia) View.GONE else View.VISIBLE
+            video.visibility = if (r.mime.startsWith("video/")) View.VISIBLE else View.GONE
+            val isSelected = r.id in selected
+            check.visibility = if (isSelected) View.VISIBLE else View.GONE
+            thumb.alpha = if (isSelected) 0.7f else 1f
+            Thumbs.bind(ui, thumb, r, thumbs, ui.dp(140))
         }
-        val uri = FileActions.uriOf(r)
-        val loader = thumbs
-        val hasThumb = r.isImage || r.mime.startsWith("video/") || r.mime == "application/pdf"
-        if (uri == null || loader == null || !hasThumb) {
-            view.tag = null
-            fallback()
-            return
-        }
-        loader.load(uri, sizePx, view, fallback) { view.scaleType = ImageView.ScaleType.CENTER_CROP }
     }
 
     private companion object {

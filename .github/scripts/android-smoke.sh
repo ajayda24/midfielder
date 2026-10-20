@@ -25,14 +25,11 @@ for i in 1 2 3; do
 done
 sleep 5
 
-echo "== Visiting every tab (screenshots for review), three rounds"
-API=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
-mkdir -p screens
+echo "== Visiting every tab, three rounds (crash and memory check)"
 for round in 1 2 3; do
   for tab in home files settings developer; do
     adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab "$tab" > /dev/null
-    sleep 3
-    if [ "$round" = 1 ]; then adb exec-out screencap -p > "screens/android-$API-$tab.png"; fi
+    sleep 2
   done
   echo "-- after round $round"
   adb shell dumpsys meminfo dev.midfielder | grep -E "TOTAL PSS|TOTAL:|Views:|Activities:" | head -4
@@ -55,4 +52,25 @@ echo "== Foreground service"
 adb shell dumpsys activity services dev.midfielder | head -30
 echo "== Memory"
 adb shell dumpsys meminfo dev.midfielder | head -25
+echo "== Screenshots with sample data (debug build: same key, installs as an update)"
+API=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
+mkdir -p screens
+DEBUG_APK=$(ls apk-debug/*.apk 2>/dev/null | head -1)
+if [ -n "$DEBUG_APK" ]; then
+  adb install -r "$DEBUG_APK" | tail -1
+  adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --ez demo true > /dev/null
+  sleep 6
+  for tab in home files settings developer; do
+    adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab "$tab" > /dev/null
+    sleep 3
+    adb exec-out screencap -p > "screens/android-$API-$tab.png"
+  done
+  # Home scrolled down (recent files and activity), and the gallery view.
+  adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab home > /dev/null
+  sleep 2
+  adb shell input swipe 500 1600 500 500 300
+  sleep 2
+  adb exec-out screencap -p > "screens/android-$API-home-scrolled.png"
+  adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::debug build crashed"; adb logcat -d -b crash; exit 1; }
+fi
 echo "Smoke test passed"

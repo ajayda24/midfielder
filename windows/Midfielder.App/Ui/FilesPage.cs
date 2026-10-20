@@ -16,14 +16,16 @@ internal sealed class FilesPage : Panel
     private readonly PillButton _reveal = new("Show in folder", ButtonKind.Outline, Theme.Glyph.Folder);
     private readonly PillButton _delete = new("Delete", ButtonKind.Danger, Theme.Glyph.Delete);
     private readonly PillButton _view = new("Gallery", ButtonKind.Tonal, Theme.Glyph.Grid);
-    private readonly Label _empty = Labels.Make("No files yet.\nFiles you send or receive show up here — drop some on Home to start.", Theme.Body(10.5f), Theme.Muted, autoSize: false);
+    private readonly Label _empty = Labels.Make("No files yet.\nFiles you send or receive show up here — drop some on Home to start.", Theme.Body(10.5f), Theme.Muted);
     private readonly ContextMenuStrip _menu = new() { Renderer = new MenuRenderer() };
+    private readonly HStack _header;
+    private readonly HStack _toolbar;
 
     public FilesPage(IAppHost host)
     {
         _host = host;
         BackColor = Theme.Background;
-        Padding = new Padding(Px(32), Px(24), Px(32), Px(16)); // a plain Panel: device pixels
+        Measure.CenterColumn(this, 1100, 32, 24, 16);
         _thumbs = new ThumbnailCache(this, Px(150));
         _browser.Thumbnails = _thumbs;
         _browser.Gallery = s_gallery;
@@ -31,9 +33,11 @@ internal sealed class FilesPage : Panel
         var title = Labels.Title("Files");
         var openFolder = new PillButton("Open folder", ButtonKind.Tonal, Theme.Glyph.Folder);
         openFolder.Click += (_, _) => Shell.OpenFolder(_host.Settings.ReceiveFolder);
-        var header = new HStack { Dock = DockStyle.Top, Fill = title, MinHeight = 48 }.With(title, openFolder);
+        _header = new HStack { Dock = DockStyle.Top, Fill = title, MinHeight = 48, MinFillWidth = 80 }.With(title, openFolder);
+        var header = _header;
 
-        var toolbar = new HStack { Dock = DockStyle.Top, MinHeight = 52, Spacing = 8 };
+        _toolbar = new HStack { Dock = DockStyle.Top, MinHeight = 52, Spacing = 8, Wrap = true, MinFillWidth = 0, Padding = new Padding(0, 6, 0, 6) };
+        var toolbar = _toolbar;
         foreach (var f in Enum.GetValues<Filter>())
         {
             var chip = new Chip(f.ToString()) { Selected = f == s_filter };
@@ -75,6 +79,20 @@ internal sealed class FilesPage : Panel
     }
 
     private int Px(int v) => (int)Math.Round(v * DeviceDpi / 96f);
+
+    /// <summary>Docked rows get their measured height for the current width before docking runs.</summary>
+    protected override void OnLayout(LayoutEventArgs levent)
+    {
+        Measure.CenterColumn(this, 1100, 32, 24, 16);
+        int w = ClientSize.Width - Padding.Horizontal;
+        if (w > 0)
+        {
+            int hh = _header.MeasureHeight(w), th = _toolbar.MeasureHeight(w);
+            if (_header.Height != hh) _header.Height = hh;
+            if (_toolbar.Height != th) _toolbar.Height = th;
+        }
+        base.OnLayout(levent);
+    }
 
     private void OnHistoryChanged()
     {

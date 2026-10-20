@@ -687,6 +687,8 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _storage.SaveSettings(_settings);
     }
 
+    public void SaveSettings() => _storage.SaveSettings(_settings);
+
     public void SetReceiveFolder(string path)
     {
         _settings.ReceiveFolder = path;

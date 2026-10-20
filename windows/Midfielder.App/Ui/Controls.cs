@@ -27,26 +27,35 @@ internal sealed class Card : VStack
     public Card()
     {
         BackColor = Theme.Surface;
-        Padding = new Padding(18, 16, 18, 16);
+        Padding = new Padding(20, 16, 20, 18);
         Spacing = 10;
-        AutoHeight = true;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Color Fill { get; set; } = Theme.Surface;
 
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public Color Border { get; set; } = Theme.Outline;
+    protected override void OnPaintBackground(PaintEventArgs e) => Surface.PaintCard(this, e.Graphics, Fill);
+}
 
-    protected override void OnPaintBackground(PaintEventArgs e)
+/// <summary>Card look for a panel whose children are docked (e.g. a list that fills the card).</summary>
+internal sealed class Surface : Panel
+{
+    public Surface()
     {
-        var g = e.Graphics;
-        g.Clear(Parent?.BackColor ?? Theme.Background);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.UserPaint, true);
+        BackColor = Theme.Surface;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e) => PaintCard(this, e.Graphics, Theme.Surface);
+
+    public static void PaintCard(Control c, Graphics g, Color fill)
+    {
+        g.Clear(c.Parent?.BackColor ?? Theme.Background);
         Theme.Smooth(g);
-        float r = 12 * DeviceDpi / 96f;
-        var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
-        Theme.FillRounded(g, Fill, rect, r);
-        if (Border != Color.Empty) Theme.StrokeRounded(g, Border, rect, r);
+        float r = 12 * c.DeviceDpi / 96f;
+        var rect = new RectangleF(0.5f, 0.5f, c.Width - 1.5f, c.Height - 1.5f);
+        Theme.FillRounded(g, fill, rect, r);
+        Theme.StrokeRounded(g, Theme.Outline, rect, r);
     }
 }
 
@@ -345,11 +354,21 @@ internal sealed class NavItem : ThemedControl
 
     public string Glyph { get; }
 
+    private bool _compact;
+
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Selected
     {
         get => _selected;
         set { _selected = value; Invalidate(); }
+    }
+
+    /// <summary>Icon only (narrow windows); the label shows as a tooltip.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Compact
+    {
+        get => _compact;
+        set { _compact = value; Invalidate(); }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -361,6 +380,11 @@ internal sealed class NavItem : ThemedControl
         else if (_hover) Theme.FillRounded(g, Theme.Highlight, rect, S(10f));
         if (Focused && ShowFocusCues) Theme.StrokeRounded(g, Theme.Primary, rect, S(10f));
         var fg = _selected ? Theme.PrimaryDark : Theme.Muted;
+        if (_compact)
+        {
+            TextRenderer.DrawText(g, Glyph, Theme.Icons(13f), ClientRectangle, fg, TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter);
+            return;
+        }
         TextRenderer.DrawText(g, Glyph, Theme.Icons(12f), new Rectangle(S(20), 0, S(24), Height), fg, TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter);
         TextRenderer.DrawText(g, Text, _selected ? Theme.Strong(10f) : Theme.Body(10f), new Rectangle(S(54), 0, Width - S(60), Height), _selected ? Theme.Text : Theme.Muted,
             TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
@@ -411,22 +435,25 @@ internal sealed class GlyphBadge : ThemedControl
     }
 }
 
-/// <summary>Label factory with the theme's fonts; transparent so cards show through.</summary>
+/// <summary>
+/// Label factory with the theme's fonts; transparent so cards show through. Labels never auto-size: the stacks
+/// measure them (wrapped to the width they get, or one ellipsized line with <c>singleLine</c>).
+/// </summary>
 internal static class Labels
 {
-    public static Label Make(string text, Font font, Color color, bool autoSize = true) => new()
+    public static Label Make(string text, Font font, Color color, bool singleLine = false) => new()
     {
         Text = text,
         Font = font,
         ForeColor = color,
         BackColor = Color.Transparent,
-        AutoSize = autoSize,
+        AutoSize = false,
         UseMnemonic = false,
-        AutoEllipsis = !autoSize,
+        AutoEllipsis = singleLine,
     };
 
-    public static Label Title(string text) => Make(text, Theme.Title(20f), Theme.Text);
-    public static Label Heading(string text) => Make(text, Theme.Strong(11.5f), Theme.Text);
+    public static Label Title(string text) => Make(text, Theme.Title(20f), Theme.Text, singleLine: true);
+    public static Label Heading(string text) => Make(text, Theme.Strong(11.5f), Theme.Text, singleLine: true);
     public static Label Body(string text) => Make(text, Theme.Body(10f), Theme.Text);
     public static Label Muted(string text, float size = 9f) => Make(text, Theme.Body(size), Theme.Muted);
 }

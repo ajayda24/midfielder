@@ -39,10 +39,10 @@ public sealed partial class MainFormTests : IDisposable
             string? screens = Environment.GetEnvironmentVariable("MIDFIELDER_SCREENS");
             if (screens is not null) Directory.CreateDirectory(screens);
 
-            // Warm-up round (fonts and other process-lifetime caches), with screenshots.
+            // Warm-up round (fonts and other process-lifetime caches), with screenshots at every size.
             RunWindow(host, screens);
             long gdi = GuiResources(0), user = GuiResources(1);
-            for (int i = 0; i < 5; i++) RunWindow(host, null);
+            for (int i = 0; i < 4; i++) RunWindow(host, null);
             GC.Collect();
             GC.WaitForPendingFinalizers();
             Pump(200);
@@ -52,30 +52,71 @@ public sealed partial class MainFormTests : IDisposable
         });
     }
 
+    private static readonly Size[] Sizes = [new(800, 600), new(1280, 800), new(1920, 1080)];
+
     private static void RunWindow(FakeHost host, string? screens)
     {
+        var problems = new List<string>();
         using var form = new MainForm(host);
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(0, 0);
         form.Show();
-        foreach (string page in new[] { MainForm.HomeName, MainForm.FilesName, MainForm.SettingsName, MainForm.DeveloperName, MainForm.FilesName })
+        foreach (var size in screens is null ? Sizes[1..2] : Sizes)
         {
-            form.ShowPage(page);
-            Pump(page == MainForm.FilesName ? 1_500 : 300); // let thumbnails load
-            if (screens is null) continue;
-            using var bmp = new Bitmap(form.Width, form.Height);
-            form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.Size));
-            bmp.Save(Path.Combine(screens, $"windows-{page}.png"), ImageFormat.Png);
+            form.Size = size;
+            foreach (string page in new[] { MainForm.HomeName, MainForm.FilesName, MainForm.SettingsName, MainForm.DeveloperName })
+            {
+                form.ShowPage(page);
+                Pump(page == MainForm.FilesName ? 1_200 : 250); // let thumbnails load
+                Check(form, $"{size.Width}x{size.Height} {page}", problems);
+                Snap(form, screens, $"windows-{size.Width}-{page}.png");
+            }
+            FakeHost.FlipGallery(form);
+            Pump(800);
+            Snap(form, screens, $"windows-{size.Width}-files-gallery.png");
+            FakeHost.FlipGallery(form);
         }
-        FakeHost.FlipGallery(form);
-        Pump(1_000);
-        if (screens is not null)
-        {
-            using var bmp = new Bitmap(form.Width, form.Height);
-            form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.Size));
-            bmp.Save(Path.Combine(screens, "windows-files-gallery.png"), ImageFormat.Png);
-        }
-        FakeHost.FlipGallery(form);
         form.Close();
         Pump(100);
+        Assert.True(problems.Count == 0, string.Join(Environment.NewLine, problems));
+    }
+
+    private static void Snap(Form form, string? dir, string name)
+    {
+        if (dir is null) return;
+        using var bmp = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.Size));
+        bmp.Save(Path.Combine(dir, name), ImageFormat.Png);
+    }
+
+    /// <summary>Layout rules: page opens at the top, no empty scroll tail, cards fit content, nothing overflows sideways.</summary>
+    private static void Check(MainForm form, string where, List<string> problems)
+    {
+        var page = FakeHost.All(form).FirstOrDefault(c => c is Page or FilesPage or DeveloperPage);
+        if (page is null)
+        {
+            problems.Add($"{where}: no page");
+            return;
+        }
+        if (page is ScrollableControl { AutoScroll: true } sc && sc.AutoScrollPosition != Point.Empty)
+        {
+            problems.Add($"{where}: opened scrolled to {sc.AutoScrollPosition}");
+        }
+        if (page is VStack stack && stack.AutoScrollMinSize.Height > 0 && stack.AutoScrollMinSize.Height > stack.MeasureHeight(stack.ClientSize.Width) + 2)
+        {
+            problems.Add($"{where}: scroll range {stack.AutoScrollMinSize.Height} > content {stack.MeasureHeight(stack.ClientSize.Width)}");
+        }
+        var pageRect = page.RectangleToScreen(page.ClientRectangle);
+        foreach (var c in FakeHost.All(page).Where(c => c.Visible))
+        {
+            if (c is Card card && Math.Abs(card.Height - card.MeasureHeight(card.Width)) > 2)
+            {
+                problems.Add($"{where}: card height {card.Height} vs content {card.MeasureHeight(card.Width)}");
+            }
+            if (c is VScrollBar or HScrollBar) continue;
+            var r = c.RectangleToScreen(c.ClientRectangle);
+            if (r.Width > 0 && r.Right > pageRect.Right + 1) problems.Add($"{where}: {c.GetType().Name} '{c.Text}' overflows by {r.Right - pageRect.Right}px");
+        }
     }
 
     private static void Pump(int ms)
@@ -182,6 +223,7 @@ public sealed partial class MainFormTests : IDisposable
         public void SetStartWithWindows(bool on) => Settings.StartWithWindows = on;
         public void SetContextMenu(bool on) => Settings.ContextMenu = on;
         public void SetReceiveFolder(string path) => Settings.ReceiveFolder = path;
+        public void SaveSettings() { }
 
         public void RaiseStatus() => StatusChanged?.Invoke();
 
@@ -193,7 +235,7 @@ public sealed partial class MainFormTests : IDisposable
             toggle.PerformClick();
         }
 
-        private static IEnumerable<Control> All(Control root)
+        public static IEnumerable<Control> All(Control root)
         {
             foreach (Control c in root.Controls)
             {

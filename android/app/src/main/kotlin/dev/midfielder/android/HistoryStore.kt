@@ -41,6 +41,15 @@ class HistoryStore private constructor(context: Context) {
         changed()
     }
 
+    /** Puts removed records back in time order (Undo). */
+    fun restore(records: List<TransferRecord>) {
+        if (records.isEmpty()) return
+        val merged = (history.snapshot() + records).distinctBy { it.id }.sortedByDescending { it.timeMs }
+        history.clear()
+        for (r in merged.asReversed()) history.add(r)
+        changed()
+    }
+
     fun remove(ids: Collection<String>) {
         if (history.remove(ids) > 0) changed()
     }

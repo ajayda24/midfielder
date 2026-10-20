@@ -2,12 +2,71 @@ using System.ComponentModel;
 
 namespace Midfielder.App.Ui;
 
+/// <summary>A control that can say how tall it wants to be at a given width (the "measure" pass).</summary>
+internal interface IMeasure
+{
+    int MeasureHeight(int width);
+}
+
 /// <summary>
-/// Lays children out top to bottom at full width (minus padding), with <see cref="Spacing"/> between them.
-/// Padding and spacing are in 96-DPI units and scaled to the monitor.
-/// Auto-size labels get their wrapped height. With <see cref="AutoHeight"/> the panel grows to fit.
+/// Measure/arrange helpers shared by the stacks. Measuring never changes any control; arranging only sets the
+/// bounds of children. That split is what keeps layouts stable: nothing resizes itself mid-layout, so there
+/// are no feedback loops (a label measured at 1 px wide can't leave a card 800 px tall).
 /// </summary>
-internal class VStack : Panel
+internal static class Measure
+{
+    private const TextFormatFlags Wrap = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.TextBoxControl;
+    private const TextFormatFlags Line = TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+
+    public static int Px(Control c, int v) => (int)Math.Round(v * c.DeviceDpi / 96f);
+
+    public static int Height(Control c, int width)
+    {
+        switch (c)
+        {
+            case IMeasure m:
+                return m.MeasureHeight(width);
+            case Label l:
+                if (l.Text.Length == 0) return TextRenderer.MeasureText("X", l.Font, Size.Empty, Line).Height + l.Padding.Vertical;
+                return l.AutoEllipsis
+                    ? TextRenderer.MeasureText("Xg", l.Font, Size.Empty, Line).Height + l.Padding.Vertical
+                    : TextRenderer.MeasureText(l.Text, l.Font, new Size(Math.Max(1, width - l.Padding.Horizontal), int.MaxValue), Wrap).Height + l.Padding.Vertical;
+            default:
+                return c.Height;
+        }
+    }
+
+    /// <summary>Natural (single-line) width; labels measure their text, everything else keeps its width.</summary>
+    public static int Width(Control c) => c switch
+    {
+        Label l => Math.Max(l.MinimumSize.Width, TextRenderer.MeasureText(l.Text.Length == 0 ? " " : l.Text, l.Font, Size.Empty, Line).Width + l.Padding.Horizontal + 2),
+        HStack h => h.NaturalWidth(),
+        _ => c.Width,
+    };
+
+    /// <summary>Side padding that keeps a docked page's content in a centered column of at most <paramref name="maxLogical"/> px.</summary>
+    public static void CenterColumn(Control page, int maxLogical, int minSideLogical, int top, int bottom)
+    {
+        int side = Math.Max(Px(page, minSideLogical), (page.ClientSize.Width - Px(page, maxLogical)) / 2);
+        var pad = new Padding(side, Px(page, top), side, Px(page, bottom));
+        if (page.Padding != pad) page.Padding = pad;
+    }
+
+    /// <summary>Arranges a child and, for nested stacks, re-arranges them too (their content may have changed).</summary>
+    public static void Place(Control c, int x, int y, int w, int h)
+    {
+        bool same = c.Bounds == new Rectangle(x, y, w, h);
+        c.SetBounds(x, y, w, h);
+        if (same && c is VStack or HStack) c.PerformLayout(); // bounds unchanged: no automatic layout
+    }
+}
+
+/// <summary>
+/// Lays children out top to bottom at full width (minus padding), or in <see cref="Columns"/> equal columns.
+/// Padding and spacing are in 96-DPI units. A scrolling stack sizes its scroll range to the content; with
+/// <see cref="MaxContentWidth"/> the content is a centered column that doesn't stretch across wide windows.
+/// </summary>
+internal class VStack : Panel, IMeasure
 {
     public VStack()
     {
@@ -19,43 +78,94 @@ internal class VStack : Panel
     public int Spacing { get; set; } = 12;
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int Columns { get; set; } = 1;
+
+    /// <summary>Below this content width (logical px) the columns collapse to one.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int MinColumnWidth { get; set; } = 320;
+
+    /// <summary>0 = no limit. Logical px.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int MaxContentWidth { get; set; }
+
+    // Kept for source compatibility: the parent always decides the height now.
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool AutoHeight { get; set; }
 
-    /// <summary>Children listed here keep their own width (left-aligned) instead of stretching.</summary>
-    public HashSet<Control> NoStretch { get; } = [];
+    private int Px(int v) => Measure.Px(this, v);
 
-    private int Px(int v) => (int)Math.Round(v * DeviceDpi / 96f);
+    private (int X, int Width) Column(int outerWidth)
+    {
+        int w = Math.Max(0, outerWidth - Px(Padding.Horizontal));
+        int x = Px(Padding.Left);
+        if (MaxContentWidth > 0 && w > Px(MaxContentWidth))
+        {
+            x += (w - Px(MaxContentWidth)) / 2;
+            w = Px(MaxContentWidth);
+        }
+        return (x, w);
+    }
+
+    private int ColumnsFor(int width) => Columns <= 1 || width < Px(MinColumnWidth) * Columns ? 1 : Columns;
+
+    private List<Control> VisibleChildren() => Controls.Cast<Control>().Where(c => c.Visible).ToList();
+
+    public int MeasureHeight(int width)
+    {
+        var (_, w) = Column(width);
+        return Px(Padding.Vertical) + ContentHeight(w, null, 0, 0);
+    }
+
+    /// <summary>Measures (and, when <paramref name="arrangeAt"/> is set, arranges) the children.</summary>
+    private int ContentHeight(int w, int? arrangeAt, int x0, int y0)
+    {
+        var items = VisibleChildren();
+        int cols = ColumnsFor(w);
+        int gap = Px(Spacing);
+        int colW = cols == 1 ? w : (w - gap * (cols - 1)) / cols;
+        int y = 0;
+        for (int i = 0; i < items.Count; i += cols)
+        {
+            if (i > 0) y += gap;
+            var row = items.Skip(i).Take(cols).ToList();
+            int rowH = row.Max(c => Measure.Height(c, colW));
+            if (arrangeAt is not null)
+            {
+                for (int k = 0; k < row.Count; k++)
+                {
+                    int h = cols == 1 ? rowH : Measure.Height(row[k], colW);
+                    Measure.Place(row[k], x0 + k * (colW + gap), y0 + y, colW, h);
+                }
+            }
+            y += rowH;
+        }
+        return y;
+    }
 
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
-        var pad = new Padding(Px(Padding.Left), Px(Padding.Top), Px(Padding.Right), Px(Padding.Bottom)); // logical → device
+        var (x, w) = Column(ClientSize.Width);
         int offset = AutoScroll ? AutoScrollPosition.Y : 0; // <= 0 when scrolled down
-        int x = pad.Left, y = pad.Top + offset;
-        int w = Math.Max(0, ClientSize.Width - pad.Horizontal);
-        bool first = true;
-        foreach (Control c in Controls)
+        int content = ContentHeight(w, 0, x, Px(Padding.Top) + offset);
+        if (AutoScroll)
         {
-            if (!c.Visible) continue;
-            if (!first) y += Px(Spacing);
-            first = false;
-            int cw = NoStretch.Contains(c) ? Math.Min(c.Width, w) : w;
-            int ch = c is Label { AutoSize: true } l ? l.GetPreferredSize(new Size(cw, 0)).Height : c.Height;
-            if (c is Label { AutoSize: true } label)
-            {
-                label.MaximumSize = new Size(cw, 0);
-            }
-            c.SetBounds(x, y, cw, ch);
-            y += c.Height;
+            int total = content + Px(Padding.Vertical);
+            // Only as tall as the content: no scrollbar when it fits, no empty tail when it doesn't.
+            var wanted = new Size(0, total > ClientSize.Height ? total : 0);
+            if (AutoScrollMinSize != wanted) AutoScrollMinSize = wanted;
         }
-        int total = y - offset + pad.Bottom;
-        if (AutoHeight && Height != total) Height = total;
-        if (AutoScroll && AutoScrollMinSize.Height != total) AutoScrollMinSize = new Size(0, total);
     }
+
+    public override Size GetPreferredSize(Size proposedSize) =>
+        new(proposedSize.Width, MeasureHeight(proposedSize.Width > 0 ? proposedSize.Width : Width));
 }
 
-/// <summary>Lays children out left to right, vertically centered; <see cref="Fill"/> takes the leftover width.</summary>
-internal sealed class HStack : Panel
+/// <summary>
+/// Lays children out left to right, vertically centered; <see cref="Fill"/> takes the leftover width.
+/// With <see cref="Wrap"/>, children that don't fit move to the next line instead of being cut off.
+/// </summary>
+internal sealed class HStack : Panel, IMeasure
 {
     public HStack()
     {
@@ -72,7 +182,14 @@ internal sealed class HStack : Panel
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int MinHeight { get; set; }
 
-    private int Px(int v) => (int)Math.Round(v * DeviceDpi / 96f);
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Wrap { get; set; }
+
+    /// <summary>Smallest width the <see cref="Fill"/> child may get before the row wraps (logical px).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int MinFillWidth { get; set; } = 160;
+
+    private int Px(int v) => Measure.Px(this, v);
 
     public HStack With(params Control[] children)
     {
@@ -80,26 +197,73 @@ internal sealed class HStack : Panel
         return this;
     }
 
+    private List<Control> VisibleChildren() => Controls.Cast<Control>().Where(c => c.Visible).ToList();
+
+    public int NaturalWidth()
+    {
+        var items = VisibleChildren();
+        return items.Sum(c => c == Fill ? Px(MinFillWidth) : Measure.Width(c)) + Px(Spacing) * Math.Max(0, items.Count - 1) + Px(Padding.Horizontal);
+    }
+
+    /// <summary>Splits children into lines (one line unless wrapping), each with its widths.</summary>
+    private List<List<(Control C, int W)>> Lines(int width)
+    {
+        int inner = Math.Max(0, width - Px(Padding.Horizontal));
+        int gap = Px(Spacing);
+        var lines = new List<List<(Control, int)>> { new() };
+        int used = 0;
+        foreach (var c in VisibleChildren())
+        {
+            int w = c == Fill ? Px(MinFillWidth) : Math.Min(Measure.Width(c), inner);
+            var line = lines[^1];
+            if (Wrap && line.Count > 0 && used + gap + w > inner)
+            {
+                line = [];
+                lines.Add(line);
+                used = 0;
+            }
+            used += (line.Count > 0 ? gap : 0) + w;
+            line.Add((c, w));
+        }
+        // The fill child takes whatever its line has left.
+        foreach (var line in lines)
+        {
+            int idx = line.FindIndex(t => t.Item1 == Fill);
+            if (idx < 0) continue;
+            int others = line.Where((_, i) => i != idx).Sum(t => t.Item2) + gap * Math.Max(0, line.Count - 1);
+            line[idx] = (Fill!, Math.Max(0, inner - others));
+        }
+        return lines;
+    }
+
+    public int MeasureHeight(int width)
+    {
+        var lines = Lines(width);
+        int gap = Px(Spacing);
+        int h = lines.Sum(l => l.Count == 0 ? 0 : l.Max(t => Measure.Height(t.C, t.W))) + gap * Math.Max(0, lines.Count - 1);
+        return Math.Max(Px(MinHeight), h + Px(Padding.Vertical));
+    }
+
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
-        var visible = Controls.Cast<Control>().Where(c => c.Visible).ToList();
+        var lines = Lines(ClientSize.Width);
         int gap = Px(Spacing);
-        int fixedW = visible.Where(c => c != Fill).Sum(c => c is Label { AutoSize: true } l ? l.PreferredWidth : c.Width) + gap * Math.Max(0, visible.Count - 1);
-        int left = Px(Padding.Left);
-        int fillW = Math.Max(0, ClientSize.Width - left - Px(Padding.Right) - fixedW);
-        int h = Math.Max(Px(MinHeight), visible.Count == 0 ? 0 : visible.Max(c => c == Fill && c is Label { AutoSize: true } fl
-            ? fl.GetPreferredSize(new Size(fillW, 0)).Height
-            : c is Label { AutoSize: true } l2 ? l2.PreferredHeight : c.Height));
-        int x = left;
-        foreach (var c in visible)
+        int total = MeasureHeight(ClientSize.Width) - Px(Padding.Vertical);
+        int content = lines.Sum(l => l.Count == 0 ? 0 : l.Max(t => Measure.Height(t.C, t.W))) + gap * Math.Max(0, lines.Count - 1);
+        int y = Px(Padding.Top) + Math.Max(0, (total - content) / 2);
+        foreach (var line in lines)
         {
-            int w = c == Fill ? fillW : c is Label { AutoSize: true } l ? l.PreferredWidth : c.Width;
-            if (c == Fill && c is Label { AutoSize: true } fill) fill.MaximumSize = new Size(Math.Max(1, fillW), 0);
-            int ch = c is Label { AutoSize: true } lb ? lb.GetPreferredSize(new Size(w, 0)).Height : c.Height;
-            c.SetBounds(x, (h - ch) / 2, w, ch);
-            x += w + gap;
+            if (line.Count == 0) continue;
+            int lineH = line.Max(t => Measure.Height(t.C, t.W));
+            int x = Px(Padding.Left);
+            foreach (var (c, w) in line)
+            {
+                int ch = Measure.Height(c, w);
+                Measure.Place(c, x, y + (lineH - ch) / 2, w, ch);
+                x += w + gap;
+            }
+            y += lineH + gap;
         }
-        if (Height != h) Height = h;
     }
 }

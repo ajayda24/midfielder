@@ -10,10 +10,17 @@ internal abstract class Page : VStack
     {
         Host = host;
         AutoScroll = true;
-        Padding = new Padding(32, 24, 32, 28);
+        Padding = new Padding(32, 24, 32, 32);
         Spacing = 14;
+        MaxContentWidth = 1040;
         BackColor = Theme.Background;
     }
+
+    /// <summary>Focus moving to a control must never scroll the page (it opens at the top and stays put).</summary>
+    protected override Point ScrollToControl(Control activeControl) => DisplayRectangle.Location;
+
+    /// <summary>A borderless stack for use inside a card.</summary>
+    protected static VStack Inner(int spacing = 2) => new() { Padding = Padding.Empty, Spacing = spacing, BackColor = Theme.Surface };
 
     protected IAppHost Host { get; }
 
@@ -38,7 +45,7 @@ internal abstract class Page : VStack
 
     protected static Control Header(string title, string? subtitle)
     {
-        var box = new VStack { AutoHeight = true, Spacing = 2, Padding = Padding.Empty };
+        var box = new VStack { Spacing = 2, Padding = Padding.Empty };
         box.Controls.Add(Labels.Title(title));
         if (subtitle is not null) box.Controls.Add(Labels.Muted(subtitle, 10f));
         return box;
@@ -46,10 +53,10 @@ internal abstract class Page : VStack
 
     protected static HStack SettingRow(string title, string? detail, Control trailing)
     {
-        var text = new VStack { AutoHeight = true, Spacing = 2, Padding = Padding.Empty, BackColor = Theme.Surface };
+        var text = Inner();
         text.Controls.Add(Labels.Make(title, Theme.Body(10.5f), Theme.Text));
         if (detail is not null) text.Controls.Add(Labels.Muted(detail));
-        var row = new HStack { Fill = text, MinHeight = 44 };
+        var row = new HStack { Fill = text, MinHeight = 48, Spacing = 24 };
         return row.With(text, trailing);
     }
 

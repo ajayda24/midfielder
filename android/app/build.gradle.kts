@@ -69,5 +69,9 @@ dependencies {
     implementation(project(":core"))
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.zxing.core)
+    // Material 3 components (cards, buttons, chips, switches, bottom navigation, snackbars).
+    implementation(libs.material)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.recyclerview)
     debugImplementation(libs.leakcanary)
 }

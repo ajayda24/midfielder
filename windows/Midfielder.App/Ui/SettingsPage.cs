@@ -25,7 +25,7 @@ internal sealed class SettingsPage : Page
 
         var files = new Card();
         files.Controls.Add(Labels.Heading("Received files"));
-        _folder = Labels.Make(s.ReceiveFolder, Theme.Body(10f), Theme.Text);
+        _folder = Labels.Make(s.ReceiveFolder, Theme.Body(10f), Theme.Text, singleLine: true);
         var change = new PillButton("Change…", ButtonKind.Outline);
         change.Click += (_, _) => ChooseFolder();
         var open = new PillButton("Open", ButtonKind.Tonal, Theme.Glyph.Folder);
@@ -53,7 +53,7 @@ internal sealed class SettingsPage : Page
                 Host.History.ClearHistory();
             }
         };
-        stats.Controls.Add(new HStack().With(reset, clear));
+        stats.Controls.Add(new HStack { Wrap = true }.With(reset, clear));
         Controls.Add(stats);
         RenderDevices();
     }
@@ -82,14 +82,14 @@ internal sealed class SettingsPage : Page
         foreach (var d in Host.PairedDevices)
         {
             bool online = connected.Contains(d.Fingerprint);
-            var text = new VStack { AutoHeight = true, Padding = Padding.Empty, Spacing = 2, BackColor = Theme.Surface };
-            text.Controls.Add(Labels.Make(d.Name, Theme.Strong(10.5f), Theme.Text));
+            var text = Inner();
+            text.Controls.Add(Labels.Make(d.Name, Theme.Strong(10.5f), Theme.Text, singleLine: true));
             text.Controls.Add(Labels.Muted(online ? "Connected" + (Host.AddressOf(d) is { } a ? $" · {a}" : "") : "Not connected right now"));
             _devices.Controls.Add(new HStack { Fill = text, Spacing = 14 }.With(new GlyphBadge(Theme.Glyph.Phone, 40), text));
         }
         var pair = new PillButton(Host.PairedDevices.Count == 0 ? "Pair a phone" : "Pair another phone", ButtonKind.Primary, Theme.Glyph.Link);
         pair.Click += (_, _) => Host.ShowPairing();
-        var buttons = new HStack().With(pair);
+        var buttons = new HStack { Wrap = true }.With(pair);
         if (Host.PairedDevices.Count > 0)
         {
             var forget = new PillButton("Forget", ButtonKind.Danger, Theme.Glyph.Delete);

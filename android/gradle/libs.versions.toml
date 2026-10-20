@@ -7,6 +7,9 @@ bouncycastle = "1.79"
 junit = "5.11.3"
 zxing = "3.5.3"
 leakcanary = "2.14"
+material = "1.12.0"
+appcompat = "1.7.0"
+recyclerview = "1.3.2"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -18,6 +21,10 @@ junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "jun
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 leakcanary = { module = "com.squareup.leakcanary:leakcanary-android", version.ref = "leakcanary" }
+
+material = { module = "com.google.android.material:material", version.ref = "material" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+androidx-recyclerview = { module = "androidx.recyclerview:recyclerview", version.ref = "recyclerview" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

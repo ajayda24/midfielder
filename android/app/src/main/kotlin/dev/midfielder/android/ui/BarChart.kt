@@ -7,15 +7,16 @@ import android.graphics.RectF
 import android.util.TypedValue
 import android.view.View
 
-/** Seven rounded bars (oldest → today) with day labels. Draws only when its values change. */
-class BarChart(context: Context) : View(context) {
+/** Seven rounded bars (oldest → today) with day labels and today's value on top. Draws only when values change. */
+class BarChart(context: Context, private val bar: Int, private val today: Int, labelColor: Int) : View(context) {
     private val density = resources.displayMetrics.density
-    private val bar = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Palette.MUTED
+        color = labelColor
         textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 11f, resources.displayMetrics)
         textAlign = Paint.Align.CENTER
     }
+    private val value = Paint(label).apply { color = today; isFakeBoldText = true }
     private val rect = RectF()
     private var values: List<Long> = emptyList()
     private var labels: List<String> = emptyList()
@@ -29,23 +30,26 @@ class BarChart(context: Context) : View(context) {
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), (96 * density).toInt())
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), (120 * density).toInt())
     }
 
     override fun onDraw(canvas: Canvas) {
         if (values.isEmpty()) return
-        val labelSpace = 18 * density
-        val chartH = height - labelSpace
+        val labelSpace = 20 * density
+        val top = 18 * density
+        val chartH = height - labelSpace - top
         val slot = width / values.size.toFloat()
-        val barW = (slot * 0.5f).coerceAtMost(28 * density)
+        val barW = (slot * 0.56f).coerceAtMost(32 * density)
         val max = (values.maxOrNull() ?: 0L).coerceAtLeast(1L)
-        val r = 6 * density
+        val r = 8 * density
         values.forEachIndexed { i, v ->
             val cx = slot * i + slot / 2
-            val h = if (v == 0L) 4 * density else (chartH - 4 * density) * v / max + 4 * density
-            bar.color = if (i == values.lastIndex) Palette.PRIMARY else Palette.HIGHLIGHT_STRONG
-            rect.set(cx - barW / 2, chartH - h, cx + barW / 2, chartH)
-            canvas.drawRoundRect(rect, r, r, bar)
+            val h = if (v == 0L) 6 * density else (chartH - 6 * density) * v / max + 6 * density
+            val isToday = i == values.lastIndex
+            paint.color = if (isToday) today else bar
+            rect.set(cx - barW / 2, top + chartH - h, cx + barW / 2, top + chartH)
+            canvas.drawRoundRect(rect, r, r, paint)
+            if (v > 0 && (isToday || v == max)) canvas.drawText(v.toString(), cx, rect.top - 4 * density, value)
             labels.getOrNull(i)?.let { canvas.drawText(it, cx, height - 4 * density, label) }
         }
     }

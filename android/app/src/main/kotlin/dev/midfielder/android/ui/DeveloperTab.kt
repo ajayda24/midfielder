@@ -4,76 +4,111 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import dev.midfielder.android.EventLog
 import dev.midfielder.android.MainActivity
+import dev.midfielder.android.R
 import dev.midfielder.android.Setup
 import dev.midfielder.android.SyncEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-/** Diagnostics, the activity log and the ADB commands: everything that used to clutter the main screen. */
+/** Diagnostics, ADB commands and the activity log: everything that would clutter the main screens. */
 class DeveloperTab(host: MainActivity) : Tab(host) {
     private lateinit var diag: LinearLayout
-    private lateinit var log: LinearLayout
+    private var entries: List<EventLog.Entry> = emptyList()
 
-    override fun build(): View {
-        val root = ui.vertical().apply { setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(24)) }
-        root.addView(ui.title("Developer"))
-        root.addView(ui.subtitle("Diagnostics for when something doesn't sync"))
+    private class Holder(view: View) : RecyclerView.ViewHolder(view)
 
-        root.addView(ui.sectionLabel("Status"))
-        diag = ui.card()
-        root.addView(diag)
+    private val adapter = object : RecyclerView.Adapter<Holder>() {
+        override fun getItemCount() = entries.size + HEADER_ITEMS
 
-        root.addView(ui.sectionLabel("ADB commands (tap to copy)"))
+        override fun getItemViewType(position: Int) = if (position < HEADER_ITEMS) position else HEADER_ITEMS
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder = Holder(
+            when (viewType) {
+                0 -> header()
+                else -> LogRow()
+            },
+        )
+
+        override fun onBindViewHolder(holder: Holder, position: Int) {
+            if (position >= HEADER_ITEMS) (holder.itemView as LogRow).bind(entries[position - HEADER_ITEMS], position == itemCount - 1)
+        }
+    }
+
+    override fun build(): View = RecyclerView(host).apply {
+        layoutManager = LinearLayoutManager(host)
+        adapter = this@DeveloperTab.adapter
+        clipToPadding = false
+        setPadding(ui.dp(16), ui.dp(8), ui.dp(16), ui.dp(24))
+    }
+
+    /** Everything above the log, as the list's first item (so the whole page scrolls as one). */
+    private fun header(): View {
+        val root = ui.vertical().apply {
+            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        root.addView(ui.headline("Developer").apply { setPadding(ui.dp(4), ui.dp(12), 0, ui.dp(2)) })
+        root.addView(ui.supporting("Diagnostics for when something doesn't sync").apply { setPadding(ui.dp(4), 0, 0, 0) })
+
+        root.addView(ui.sectionHeader("Status"))
+        val status = ui.card()
+        diag = status.body
+        root.addView(status.card, ui.matchWidth(4))
+
+        root.addView(ui.sectionHeader("ADB commands"))
         val adb = ui.card()
-        adb.addView(command("Silent copy detection", Setup.ADB_GRANT))
-        adb.addView(ui.divider())
-        adb.addView(command("Live log on your PC", Setup.ADB_LOGS))
-        root.addView(adb)
+        adb.body.addView(command("Silent copy detection", Setup.ADB_GRANT))
+        adb.body.addView(command("Live log on your PC", Setup.ADB_LOGS).apply { setPadding(0, ui.dp(12), 0, 0) })
+        root.addView(adb.card, ui.matchWidth(4))
 
-        val logHeader = ui.horizontal().apply { setPadding(0, ui.dp(8), 0, 0) }
-        logHeader.addView(ui.sectionLabel("Activity log"), ui.weight())
-        logHeader.addView(ui.smallButton("Copy") {
+        root.addView(ui.sectionHeader("Activity log"))
+        val chips = ui.horizontal()
+        chips.addView(ui.assistChip("Copy", R.drawable.ic_copy) {
             Setup.copy(host, logText())
-            Toast.makeText(host, "Log copied", Toast.LENGTH_SHORT).show()
+            host.snack("Log copied")
         })
-        logHeader.addView(ui.smallButton("Share") {
+        chips.addView(ui.assistChip("Share", R.drawable.ic_share) {
             runCatching {
                 host.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, logText()), null))
             }
-        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = ui.dp(8) })
-        logHeader.addView(ui.smallButton("Clear") { EventLog.clear() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = ui.dp(8) })
-        root.addView(logHeader)
-        log = ui.card().apply { setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8)) }
-        root.addView(log)
-        return ScrollView(host).apply { addView(root) }
+        }, ui.wrap(8))
+        chips.addView(ui.assistChip("Clear", R.drawable.ic_delete) { EventLog.clear() }, ui.wrap(8))
+        root.addView(chips)
+        if (::diag.isInitialized) SyncEngine.current?.let(::renderDiag)
+        return root
     }
 
     override fun start(scope: CoroutineScope) {
         scope.launch {
             val engine = engine()
-            launch { engine.status.collect { renderDiag(engine) } }
+            launch { engine.status.collect { if (::diag.isInitialized) renderDiag(engine) } }
         }
-        scope.launch { EventLog.entries.collect(::renderLog) }
+        scope.launch {
+            EventLog.entries.collect {
+                entries = it.take(MAX_SHOWN)
+                adapter.notifyDataSetChanged()
+            }
+        }
     }
 
     private fun command(label: String, cmd: String): View = ui.vertical().apply {
-        setPadding(ui.dp(4), ui.dp(8), ui.dp(4), ui.dp(8))
-        addView(ui.text(label, 14f, Palette.MUTED))
-        addView(mono(cmd, Palette.PRIMARY_DARK).apply {
-            background = ui.rounded(Palette.HIGHLIGHT, 8)
-            setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8))
+        addView(ui.small(label))
+        addView(mono(cmd, ui.onSecondaryContainer).apply {
+            background = ui.pill(ui.secondaryContainer, 10)
+            setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10))
         }, ui.matchWidth(6))
-        background = ui.pressable(null, 12)
+        isClickable = true
         setOnClickListener {
             Setup.copy(host, cmd)
-            Toast.makeText(host, "Copied", Toast.LENGTH_SHORT).show()
+            host.snack("Command copied")
         }
     }
 
@@ -94,36 +129,50 @@ class DeveloperTab(host: MainActivity) : Tab(host) {
             "Fingerprint" to engine.fingerprint,
         )
         for ((k, v) in rows) {
-            val row = ui.horizontal().apply { setPadding(0, ui.dp(5), 0, ui.dp(5)) }
-            row.addView(ui.text(k, 13f, Palette.MUTED), LinearLayout.LayoutParams(ui.dp(120), LinearLayout.LayoutParams.WRAP_CONTENT))
-            row.addView(mono(v, Palette.TEXT).apply { setTextIsSelectable(true) }, ui.weight())
+            val row = ui.horizontal().apply {
+                gravity = Gravity.TOP
+                setPadding(0, ui.dp(6), 0, ui.dp(6))
+            }
+            row.addView(ui.small(k), LinearLayout.LayoutParams(ui.dp(116), ViewGroup.LayoutParams.WRAP_CONTENT))
+            row.addView(mono(v, ui.onSurface).apply { setTextIsSelectable(true) }, ui.weight())
             diag.addView(row)
         }
     }
 
-    private fun renderLog(entries: List<EventLog.Entry>) {
-        log.removeAllViews()
-        if (entries.isEmpty()) {
-            log.addView(ui.text("Nothing logged yet", 13f, Palette.MUTED).apply { setPadding(0, ui.dp(8), 0, ui.dp(8)) })
-            return
+    private inner class LogRow : LinearLayout(host) {
+        private val stripe = View(host)
+        private val time = mono("", ui.onSurfaceVariant)
+        private val message = mono("", ui.onSurface)
+
+        init {
+            orientation = HORIZONTAL
+            setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+            setBackgroundColor(ui.containerLowest)
+            layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(stripe, LayoutParams(ui.dp(3), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = ui.dp(10) })
+            addView(time, LayoutParams(ui.dp(66), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(message, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
-        for (e in entries.take(MAX_SHOWN)) {
-            val row = ui.horizontal().apply {
-                setPadding(ui.dp(6), ui.dp(4), ui.dp(6), ui.dp(4))
-                if (e.isError) background = ui.rounded(Palette.DANGER_BG, 6)
-                gravity = android.view.Gravity.TOP
-            }
-            row.addView(mono(e.time, Palette.MUTED), LinearLayout.LayoutParams(ui.dp(64), LinearLayout.LayoutParams.WRAP_CONTENT))
-            row.addView(mono(e.message, if (e.isError) Palette.DANGER else Palette.TEXT), ui.weight())
-            log.addView(row)
+
+        fun bind(e: EventLog.Entry, last: Boolean) {
+            time.text = e.time
+            message.text = e.message
+            message.setTextColor(if (e.isError) ui.errorColor else ui.onSurface)
+            stripe.setBackgroundColor(if (e.isError) ui.errorColor else ui.secondaryContainer)
+            setBackgroundColor(if (e.isError) ui.errorContainer else ui.containerLowest)
+            (layoutParams as RecyclerView.LayoutParams).bottomMargin = if (last) 0 else ui.dp(1)
         }
     }
 
-    private fun mono(s: String, color: Int): TextView = ui.text(s, 12f, color).apply { typeface = Typeface.MONOSPACE }
+    private fun mono(s: String, color: Int): TextView = ui.small(s).apply {
+        typeface = Typeface.MONOSPACE
+        setTextColor(color)
+    }
 
     private fun logText() = EventLog.entries.value.joinToString("\n")
 
     private companion object {
-        const val MAX_SHOWN = 100
+        const val MAX_SHOWN = 150
+        const val HEADER_ITEMS = 1
     }
 }

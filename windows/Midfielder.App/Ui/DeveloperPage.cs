@@ -3,30 +3,44 @@ using System.Reflection;
 
 namespace Midfielder.App.Ui;
 
-/// <summary>Diagnostics and the live log, kept out of the way of everyday use.</summary>
-internal sealed class DeveloperPage : Page
+/// <summary>
+/// Diagnostics and the live log, kept out of the way of everyday use. Docked layout: a compact status card on
+/// top, the log fills the rest of the window with its own scrollbar (no page scrolling, no empty tail).
+/// </summary>
+internal sealed class DeveloperPage : Panel
 {
-    private readonly Card _status = new() { Spacing = 6 };
+    private readonly IAppHost _host;
+    private readonly VStack _top = new() { Dock = DockStyle.Top, Padding = Padding.Empty, Spacing = 14 };
+    private readonly Card _status = new() { Columns = 2, MinColumnWidth = 300, Spacing = 6 };
+    private readonly HStack _toolbar;
     private readonly ListView _log = new()
     {
         View = View.Details,
         FullRowSelect = true,
-        HeaderStyle = ColumnHeaderStyle.Nonclickable,
+        HeaderStyle = ColumnHeaderStyle.None,
         BorderStyle = BorderStyle.None,
         Font = Theme.Mono(9f),
         BackColor = Theme.Surface,
         ForeColor = Theme.Text,
+        Dock = DockStyle.Fill,
+        ShowItemToolTips = true,
     };
     private readonly TextBox _filter = new() { PlaceholderText = "Filter log…", BorderStyle = BorderStyle.FixedSingle, Font = Theme.Body(10f) };
     private readonly ToggleSwitch _errorsOnly = new(false) { AccessibleName = "Errors only" };
     private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
 
-    public DeveloperPage(IAppHost host) : base(host)
+    public DeveloperPage(IAppHost host)
     {
-        Controls.Add(Header("Developer", "Diagnostics for when something doesn't sync"));
-        Controls.Add(_status);
+        _host = host;
+        BackColor = Theme.Background;
+        _filter.Width = Measure.Px(this, 220);
 
-        var logCard = new Card();
+        var header = new VStack { Spacing = 2, Padding = Padding.Empty };
+        header.Controls.Add(Labels.Title("Developer"));
+        header.Controls.Add(Labels.Muted("Diagnostics for when something doesn't sync", 10f));
+        _top.Controls.Add(header);
+        _top.Controls.Add(_status);
+
         var copy = new PillButton("Copy", ButtonKind.Outline, Theme.Glyph.Copy);
         copy.Click += (_, _) => CopyLog();
         var openFile = new PillButton("Open log file", ButtonKind.Outline, Theme.Glyph.OpenFile);
@@ -38,13 +52,19 @@ internal sealed class DeveloperPage : Page
             RenderLog();
         };
         var title = Labels.Heading("Activity log");
-        logCard.Controls.Add(new HStack { Fill = title }.With(title, _filter, Labels.Muted("Errors only"), _errorsOnly, copy, openFile, clear));
-        _filter.Width = (int)(220 * DeviceDpi / 96f);
-        _log.Columns.Add("Time", (int)(110 * DeviceDpi / 96f));
-        _log.Columns.Add("Message", (int)(900 * DeviceDpi / 96f));
-        _log.Height = (int)(420 * DeviceDpi / 96f);
+        _toolbar = new HStack { Dock = DockStyle.Top, Fill = title, Wrap = true, MinFillWidth = 120, Padding = new Padding(0, 0, 0, 8) }
+            .With(title, _filter, Labels.Make("Errors only", Theme.Body(9f), Theme.Muted, singleLine: true), _errorsOnly, copy, openFile, clear);
+        var logCard = new Surface { Dock = DockStyle.Fill, Padding = new Padding(Measure.Px(this, 16)) };
         logCard.Controls.Add(_log);
+        logCard.Controls.Add(_toolbar);
+
         Controls.Add(logCard);
+        Controls.Add(new Panel { Dock = DockStyle.Top, Height = Measure.Px(this, 14), BackColor = Theme.Background });
+        Controls.Add(_top);
+
+        _log.Columns.Add("Time", Measure.Px(this, 100));
+        _log.Columns.Add("Message", Measure.Px(this, 800));
+        _log.Resize += (_, _) => _log.Columns[1].Width = Math.Max(Measure.Px(this, 200), _log.ClientSize.Width - _log.Columns[0].Width - 4);
 
         _filter.TextChanged += (_, _) => RenderLog();
         _errorsOnly.CheckedChanged += (_, _) => RenderLog();
@@ -53,21 +73,36 @@ internal sealed class DeveloperPage : Page
             _refresh.Stop();
             RenderLog();
         };
-        _log.Resize += (_, _) => _log.Columns[1].Width = Math.Max(200, _log.ClientSize.Width - _log.Columns[0].Width - 4);
+        _host.StatusChanged += OnStatus;
+        AppLog.Logged += OnLogged;
         RenderStatus();
         RenderLog();
     }
 
-    public override void Activate()
+    protected override void OnLayout(LayoutEventArgs levent)
     {
-        Host.StatusChanged += OnStatus;
-        AppLog.Logged += OnLogged;
+        Measure.CenterColumn(this, 1100, 32, 24, 24);
+        int w = ClientSize.Width - Padding.Horizontal;
+        if (w > 0)
+        {
+            int top = _top.MeasureHeight(w);
+            if (_top.Height != top) _top.Height = top;
+            int tb = _toolbar.MeasureHeight(w - Measure.Px(this, 32));
+            if (_toolbar.Height != tb) _toolbar.Height = tb;
+        }
+        base.OnLayout(levent);
     }
 
-    public override void Deactivate()
+    private void Post(Action action)
     {
-        Host.StatusChanged -= OnStatus;
-        AppLog.Logged -= OnLogged;
+        if (IsDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(action);
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     private void OnStatus() => Post(RenderStatus);
@@ -80,28 +115,26 @@ internal sealed class DeveloperPage : Page
         _status.SuspendLayout();
         foreach (Control c in _status.Controls.Cast<Control>().ToList()) c.Dispose();
         _status.Controls.Clear();
-        _status.Controls.Add(Labels.Heading("Status"));
         string version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "dev";
-        var connected = Host.ConnectedDevices;
+        var connected = _host.ConnectedDevices;
         var rows = new (string, string)[]
         {
-            ("Status", Host.StatusText),
+            ("Status", _host.StatusText),
             ("Version", version),
-            ("Listening port", Host.Port.ToString(CultureInfo.InvariantCulture)),
-            ("Local addresses", string.Join(", ", LanDiscovery.LocalAddresses(Host.Port).Select(a => a.Host))),
-            ("Connected", connected.Count == 0 ? "—" : string.Join(", ", connected.Select(d => $"{d.Name} ({Host.AddressOf(d) ?? "?"})"))),
-            ("Paired", Host.PairedDevices.Count == 0 ? "—" : string.Join(", ", Host.PairedDevices.Select(d => d.Name))),
-            ("Device ID", Host.DeviceId),
-            ("Fingerprint", Host.Fingerprint),
+            ("Connected", connected.Count == 0 ? "—" : string.Join(", ", connected.Select(d => $"{d.Name} ({_host.AddressOf(d) ?? "?"})"))),
+            ("Listening port", _host.Port.ToString(CultureInfo.InvariantCulture)),
+            ("Paired", _host.PairedDevices.Count == 0 ? "—" : string.Join(", ", _host.PairedDevices.Select(d => d.Name))),
+            ("Local addresses", string.Join(", ", LanDiscovery.LocalAddresses(_host.Port).Select(a => a.Host))),
+            ("Device ID", _host.DeviceId),
+            ("Fingerprint", _host.Fingerprint),
             ("Log file", AppLog.Path),
         };
         foreach (var (k, v) in rows)
         {
-            var key = Labels.Make(k, Theme.Body(9.5f), Theme.Muted, autoSize: false);
-            key.Width = (int)(140 * DeviceDpi / 96f);
-            key.Height = (int)(20 * DeviceDpi / 96f);
-            var value = Labels.Make(v, Theme.Mono(9.5f), Theme.Text);
-            _status.Controls.Add(new HStack { Fill = value, Spacing = 8 }.With(key, value));
+            var key = Labels.Make(k, Theme.Body(9f), Theme.Muted, singleLine: true);
+            key.MinimumSize = new Size(Measure.Px(this, 110), 0);
+            var value = Labels.Make(v, Theme.Mono(9f), Theme.Text);
+            _status.Controls.Add(new HStack { Fill = value, Spacing = 8, MinFillWidth = 120 }.With(key, value));
         }
         _status.ResumeLayout();
         PerformLayout();
@@ -119,13 +152,12 @@ internal sealed class DeveloperPage : Page
         foreach (var e in entries)
         {
             string firstLine = e.Message.Split('\n', 2)[0].TrimEnd('\r');
-            var item = new ListViewItem([e.Time.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture), firstLine])
+            _log.Items.Add(new ListViewItem([e.Time.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture), firstLine])
             {
                 ForeColor = e.IsError ? Theme.Danger : Theme.Text,
                 BackColor = e.IsError ? Theme.DangerBg : Theme.Surface,
                 ToolTipText = e.Message,
-            };
-            _log.Items.Add(item);
+            });
         }
         _log.EndUpdate();
     }
@@ -139,7 +171,12 @@ internal sealed class DeveloperPage : Page
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _refresh.Dispose();
+        if (disposing)
+        {
+            _host.StatusChanged -= OnStatus;
+            AppLog.Logged -= OnLogged;
+            _refresh.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

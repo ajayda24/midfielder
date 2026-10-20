@@ -30,4 +30,7 @@ internal interface IAppHost
     void SetStartWithWindows(bool on);
     void SetContextMenu(bool on);
     void SetReceiveFolder(string path);
+
+    /// <summary>Persists <see cref="Settings"/> (e.g. after the window saved its size).</summary>
+    void SaveSettings();
 }
