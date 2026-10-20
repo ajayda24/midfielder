@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Drawing;
+using System.Windows.Forms;
 
 namespace Midfielder.App;
 
@@ -108,6 +110,19 @@ internal sealed class HistoryStore : IDisposable
                 _records.Insert(0, r);
             }
             if (_records.Count > MaxRecords) _records.RemoveRange(MaxRecords, _records.Count - MaxRecords);
+        }
+        OnChanged();
+    }
+
+    /// <summary>Puts removed records back, in time order (Undo).</summary>
+    public void Restore(IEnumerable<TransferRecord> records)
+    {
+        lock (_gate)
+        {
+            var merged = _records.Concat(records).GroupBy(r => r.Id, StringComparer.Ordinal).Select(g => g.First())
+                .OrderByDescending(r => r.TimeMs).Take(MaxRecords).ToList();
+            _records.Clear();
+            _records.AddRange(merged);
         }
         OnChanged();
     }

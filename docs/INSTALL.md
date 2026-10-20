@@ -15,7 +15,8 @@ You need: a Windows 10/11 PC and an Android 10+ phone **on the same Wi-Fi networ
 ## 2. Windows laptop
 
 1. Create a folder that will stay put, e.g. `C:\Users\<you>\AppData\Local\Programs\Midfielder`, and move
-   `Midfielder.exe` there. Midfielder sets itself to start with Windows from that location, so don't run
+   **all the files** from the download there (`Midfielder.exe`, `MidfielderShell.dll`, `Midfielder.msix`,
+   `midfielder-sideload.cer`; keep them together). Midfielder sets itself to start with Windows from that location, so don't run
    it from Downloads.
 2. Double-click `Midfielder.exe`.
    * **"Windows protected your PC"** (SmartScreen): click **More info → Run anyway**. The app isn't
@@ -28,6 +29,12 @@ You need: a Windows 10/11 PC and an Android 10+ phone **on the same Wi-Fi networ
    window again; closing it keeps Midfielder running in the tray.
 
 No .NET or anything else to install: the exe is self-contained.
+
+**Optional: "Send to phone" at the top of the Windows 11 right-click menu.** Midfielder window → **Settings →
+"Send to phone" in the Windows 11 right-click menu** → turn it on. Windows asks once (UAC prompt) to trust
+Midfielder's certificate; after that, right-click any file or folder in Explorer → **Send to phone**, with no
+"Show more options". If you move the Midfielder folder later, the app re-registers itself on its next start.
+To undo it, turn the switch off. The certificate can be removed in `certlm.msc` → Trusted People.
 
 ## 3. Android phone
 
@@ -96,7 +103,7 @@ managers. Set Midfielder to **Unrestricted / No restrictions** and enable **Auto
 | In File Explorer, right-click a photo → **Copy**, paste in a chat app on the phone | the photo |
 | Copy text on the phone, press Ctrl+V on the laptop | same text, within about a second |
 | On the phone, Share a photo → tap your **PC's icon** in the top row of the share sheet (or **Send to PC**) | appears in `Downloads\Midfielder` with a notification; click it to open |
-| On the laptop, right-click files → **Send to phone** (Windows 11: **Show more options** first) | appear in the phone's `Download/Midfielder` |
+| On the laptop, right-click files or a folder → **Send to phone** (top of the menu once enabled in Settings; otherwise under **Show more options**) | appear in the phone's `Download/Midfielder` |
 | Drag files onto the Midfielder window on the laptop | sent to the phone, with a progress bar on both sides |
 | Open the **Files** tab on either device | everything sent and received; switch to the gallery, open, or delete |
 | Swipe down twice on the phone → edit tiles → add **Send clipboard** | a one-tap fallback |

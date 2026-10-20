@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Win32;
+using System.Drawing;
+using System.Windows.Forms;
 
 namespace Midfielder.App;
 

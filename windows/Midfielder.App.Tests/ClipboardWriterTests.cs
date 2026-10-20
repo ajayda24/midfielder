@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using Midfielder.Core.Clip;
 using Xunit;
+using System.Windows.Forms;
 
 namespace Midfielder.App.Tests;
 

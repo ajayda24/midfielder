@@ -1,0 +1,4 @@
+LIBRARY MidfielderShell
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

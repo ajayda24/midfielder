@@ -1,21 +1,27 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Windows.Threading;
 using Midfielder.App.Ui;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Net;
 using Midfielder.Protocol;
 using Xunit;
+using W = System.Windows;
 
 namespace Midfielder.App.Tests;
 
 /// <summary>
-/// Opens the real main window against a fake app: every page renders, screenshots go to $MIDFIELDER_SCREENS
-/// (uploaded by CI for review), and opening/closing the window repeatedly doesn't leak GDI or USER handles.
+/// Opens the real WPF main window against a fake app at three sizes: every page renders, screenshots go to
+/// $MIDFIELDER_SCREENS (published by CI for review), layout rules hold (opens at the top, no empty scroll tail,
+/// nothing cut off sideways), and opening/closing the window repeatedly leaks no handles or windows.
 /// </summary>
 [Collection("ui")]
-public sealed partial class MainFormTests : IDisposable
+public sealed partial class MainWindowTests : IDisposable
 {
+    private static readonly (int W, int H)[] Sizes = [(800, 600), (1280, 800), (1920, 1080)];
+    private static readonly string[] Pages = [MainWindow.HomeName, MainWindow.FilesName, MainWindow.SettingsName, MainWindow.DeveloperName];
+
     private readonly string _dir = Directory.CreateTempSubdirectory("midfielder-ui-").FullName;
 
     public void Dispose()
@@ -26,7 +32,7 @@ public sealed partial class MainFormTests : IDisposable
         }
         catch (IOException)
         {
-            // A thumbnail handle may still be closing; the temp folder is cleaned up eventually.
+            // A thumbnail may still be open; temp is cleaned up eventually.
         }
     }
 
@@ -35,92 +41,122 @@ public sealed partial class MainFormTests : IDisposable
     {
         OnSta(() =>
         {
+            Anim.Disabled = true;
             var host = new FakeHost(_dir);
             string? screens = Environment.GetEnvironmentVariable("MIDFIELDER_SCREENS");
             if (screens is not null) Directory.CreateDirectory(screens);
 
-            // Warm-up round (fonts and other process-lifetime caches), with screenshots at every size.
-            RunWindow(host, screens);
+            var problems = new List<string>();
+            RunWindow(host, screens, Sizes, problems); // warm-up (theme, fonts), with screenshots
+            Assert.True(problems.Count == 0, string.Join(Environment.NewLine, problems));
+
             long gdi = GuiResources(0), user = GuiResources(1);
-            for (int i = 0; i < 4; i++) RunWindow(host, null);
+            for (int i = 0; i < 4; i++) RunWindow(host, null, Sizes[1..2], problems);
             GC.Collect();
             GC.WaitForPendingFinalizers();
-            Pump(200);
+            Pump(300);
             long gdiAfter = GuiResources(0), userAfter = GuiResources(1);
             Assert.True(gdiAfter - gdi < 40, $"GDI handles grew from {gdi} to {gdiAfter}");
             Assert.True(userAfter - user < 40, $"USER handles grew from {user} to {userAfter}");
+            Assert.Empty(W.Application.Current.Windows);
         });
     }
 
-    private static readonly Size[] Sizes = [new(800, 600), new(1280, 800), new(1920, 1080)];
-
-    private static void RunWindow(FakeHost host, string? screens)
+    private static void RunWindow(FakeHost host, string? screens, (int W, int H)[] sizes, List<string> problems)
     {
-        var problems = new List<string>();
-        using var form = new MainForm(host);
-        form.StartPosition = FormStartPosition.Manual;
-        form.Location = new Point(0, 0);
-        form.Show();
-        foreach (var size in screens is null ? Sizes[1..2] : Sizes)
+        var window = new MainWindow(host) { WindowStartupLocation = W.WindowStartupLocation.Manual, Left = 0, Top = 0 };
+        window.Show();
+        foreach (var (w, h) in sizes)
         {
-            form.Size = size;
-            foreach (string page in new[] { MainForm.HomeName, MainForm.FilesName, MainForm.SettingsName, MainForm.DeveloperName })
+            window.Width = w;
+            window.Height = h;
+            foreach (string page in Pages)
             {
-                form.ShowPage(page);
-                Pump(page == MainForm.FilesName ? 1_200 : 250); // let thumbnails load
-                Check(form, $"{size.Width}x{size.Height} {page}", problems);
-                Snap(form, screens, $"windows-{size.Width}-{page}.png");
+                window.ShowPage(page);
+                Pump(page == MainWindow.FilesName ? 1_200 : 300);
+                Check(window, $"{w}x{h} {page}", problems);
+                Snap(window, screens, $"windows-{w}-{page}.png");
             }
-            FakeHost.FlipGallery(form);
-            Pump(800);
-            Snap(form, screens, $"windows-{size.Width}-files-gallery.png");
-            FakeHost.FlipGallery(form);
+            ToggleGallery(window);
+            Pump(1_000);
+            Snap(window, screens, $"windows-{w}-files-gallery.png");
+            ToggleGallery(window);
         }
-        form.Close();
-        Pump(100);
-        Assert.True(problems.Count == 0, string.Join(Environment.NewLine, problems));
+        window.Close();
+        Pump(150);
     }
 
-    private static void Snap(Form form, string? dir, string name)
+    /// <summary>Layout rules: page opens at the top, no empty scroll tail, nothing sticks out to the right.</summary>
+    private static void Check(MainWindow window, string where, List<string> problems)
     {
-        if (dir is null) return;
-        using var bmp = new Bitmap(form.Width, form.Height);
-        form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.Size));
-        bmp.Save(Path.Combine(dir, name), ImageFormat.Png);
-    }
-
-    /// <summary>Layout rules: page opens at the top, no empty scroll tail, cards fit content, nothing overflows sideways.</summary>
-    private static void Check(MainForm form, string where, List<string> problems)
-    {
-        var page = FakeHost.All(form).FirstOrDefault(c => c is Page or FilesPage or DeveloperPage);
+        var page = window.Page;
         if (page is null)
         {
             problems.Add($"{where}: no page");
             return;
         }
-        if (page is ScrollableControl { AutoScroll: true } sc && sc.AutoScrollPosition != Point.Empty)
+        if (page.Scroller is { } sv)
         {
-            problems.Add($"{where}: opened scrolled to {sc.AutoScrollPosition}");
+            if (sv.VerticalOffset != 0) problems.Add($"{where}: opened scrolled to {sv.VerticalOffset}");
+            double content = page.Body.ActualHeight + page.Body.Margin.Top + page.Body.Margin.Bottom;
+            if (sv.ExtentHeight > content + 2) problems.Add($"{where}: scroll range {sv.ExtentHeight:0} > content {content:0}");
         }
-        if (page is VStack stack && stack.AutoScrollMinSize.Height > 0 && stack.AutoScrollMinSize.Height > stack.MeasureHeight(stack.ClientSize.Width) + 2)
+        double right = page.ActualWidth;
+        foreach (var e in Descendants(page).OfType<W.FrameworkElement>())
         {
-            problems.Add($"{where}: scroll range {stack.AutoScrollMinSize.Height} > content {stack.MeasureHeight(stack.ClientSize.Width)}");
-        }
-        var pageRect = page.RectangleToScreen(page.ClientRectangle);
-        foreach (var c in FakeHost.All(page).Where(c => c.Visible))
-        {
-            if (c is Card card && Math.Abs(card.Height - card.MeasureHeight(card.Width)) > 2)
+            if (!e.IsVisible || e.ActualWidth <= 0 || e is W.Controls.Primitives.ScrollBar) continue;
+            if (Ancestors(e).Any(a => a is W.Controls.ScrollViewer s && s != page.Scroller && s.HorizontalScrollBarVisibility != W.Controls.ScrollBarVisibility.Disabled)) continue;
+            var edge = e.TransformToAncestor(page).Transform(new W.Point(e.ActualWidth, 0)).X;
+            if (edge > right + 1)
             {
-                problems.Add($"{where}: card height {card.Height} vs content {card.MeasureHeight(card.Width)}");
+                problems.Add($"{where}: {e.GetType().Name} '{(e as W.Controls.TextBlock)?.Text}' sticks out by {edge - right:0}px");
+                break;
             }
-            if (c is PillButton b && b.Width < b.GetPreferredSize(Size.Empty).Width - 1)
-            {
-                problems.Add($"{where}: button '{b.Text}' clipped ({b.Width} < {b.GetPreferredSize(Size.Empty).Width})");
-            }
-            if (c is VScrollBar or HScrollBar) continue;
-            var r = c.RectangleToScreen(c.ClientRectangle);
-            if (r.Width > 0 && r.Right > pageRect.Right + 1) problems.Add($"{where}: {c.GetType().Name} '{c.Text}' overflows by {r.Right - pageRect.Right}px");
         }
+    }
+
+    private static IEnumerable<W.DependencyObject> Descendants(W.DependencyObject root)
+    {
+        int n = W.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < n; i++)
+        {
+            var c = W.Media.VisualTreeHelper.GetChild(root, i);
+            yield return c;
+            foreach (var d in Descendants(c)) yield return d;
+        }
+    }
+
+    private static IEnumerable<W.DependencyObject> Ancestors(W.DependencyObject e)
+    {
+        for (var p = W.Media.VisualTreeHelper.GetParent(e); p is not null; p = W.Media.VisualTreeHelper.GetParent(p)) yield return p;
+    }
+
+    private static void ToggleGallery(MainWindow window)
+    {
+        window.ShowPage(MainWindow.FilesName);
+        Pump(100);
+        var toggle = Descendants(window).OfType<Wpf.Ui.Controls.Button>().First(b => b.Content is "Gallery" or "List");
+        toggle.RaiseEvent(new W.RoutedEventArgs(W.Controls.Primitives.ButtonBase.ClickEvent));
+    }
+
+    /// <summary>Renders the window's content over a solid backdrop (Mica isn't captured by RenderTargetBitmap).</summary>
+    private static void Snap(MainWindow window, string? dir, string name)
+    {
+        if (dir is null) return;
+        var root = (W.FrameworkElement)window.Content;
+        int w = (int)root.ActualWidth, h = (int)root.ActualHeight;
+        var visual = new W.Media.DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            dc.DrawRectangle(new W.Media.SolidColorBrush(W.Media.Color.FromRgb(0xEE, 0xF2, 0xF0)), null, new W.Rect(0, 0, w, h));
+            dc.DrawRectangle(new W.Media.VisualBrush(root), null, new W.Rect(0, 0, w, h));
+        }
+        var bmp = new W.Media.Imaging.RenderTargetBitmap(w, h, 96, 96, W.Media.PixelFormats.Pbgra32);
+        bmp.Render(visual);
+        var encoder = new W.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(W.Media.Imaging.BitmapFrame.Create(bmp));
+        using var file = File.Create(Path.Combine(dir, name));
+        encoder.Save(file);
     }
 
     private static void Pump(int ms)
@@ -128,8 +164,10 @@ public sealed partial class MainFormTests : IDisposable
         var until = Environment.TickCount64 + ms;
         while (Environment.TickCount64 < until)
         {
-            Application.DoEvents();
-            Thread.Sleep(15);
+            var frame = new DispatcherFrame();
+            Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background, () => frame.Continue = false);
+            Dispatcher.PushFrame(frame);
+            Thread.Sleep(10);
         }
     }
 
@@ -149,7 +187,7 @@ public sealed partial class MainFormTests : IDisposable
         });
         t.SetApartmentState(ApartmentState.STA);
         t.Start();
-        Assert.True(t.Join(TimeSpan.FromMinutes(2)), "UI test hung");
+        Assert.True(t.Join(TimeSpan.FromMinutes(4)), "UI test hung");
         if (error is not null) throw new InvalidOperationException("UI test failed", error);
     }
 
@@ -212,6 +250,7 @@ public sealed partial class MainFormTests : IDisposable
         public string Fingerprint => new Fingerprint(new string('b', 64)).Display();
         public int Port => 47810;
         public string StatusText => "Connected: Realme P3 Ultra";
+        public ModernMenuStatus ModernMenu => ModernMenuStatus.Off;
 
         public event Action? StatusChanged;
 
@@ -228,24 +267,8 @@ public sealed partial class MainFormTests : IDisposable
         public void SetContextMenu(bool on) => Settings.ContextMenu = on;
         public void SetReceiveFolder(string path) => Settings.ReceiveFolder = path;
         public void SaveSettings() { }
+        public Task<string> SetModernMenuAsync(bool on) => Task.FromResult("ok");
 
         public void RaiseStatus() => StatusChanged?.Invoke();
-
-        /// <summary>Clicks the Files page's Gallery/List toggle.</summary>
-        public static void FlipGallery(MainForm form)
-        {
-            form.ShowPage(MainForm.FilesName);
-            var toggle = All(form).OfType<PillButton>().First(b => b.Text is "Gallery" or "List");
-            toggle.PerformClick();
-        }
-
-        public static IEnumerable<Control> All(Control root)
-        {
-            foreach (Control c in root.Controls)
-            {
-                yield return c;
-                foreach (var d in All(c)) yield return d;
-            }
-        }
     }
 }

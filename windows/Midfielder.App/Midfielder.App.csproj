@@ -4,6 +4,8 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- The main window is WPF + WPF-UI (Fluent); the tray, clipboard and dialogs stay WinForms. -->
+    <UseWPF>true</UseWPF>
     <!-- [LibraryImport] P/Invoke source generation emits unsafe code. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
@@ -19,11 +21,17 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="QRCoder" Version="1.6.0" />
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
     <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Midfielder.Core/Midfielder.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Both WPF and WinForms are referenced: no implicit global usings for either, so names never clash. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets\midfielder.ico" LogicalName="midfielder.ico" />

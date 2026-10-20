@@ -1,187 +1,192 @@
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Reflection;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Markup;
+using System.Windows.Media;
+using Fluent = Wpf.Ui.Controls;
 
 namespace Midfielder.App.Ui;
 
 /// <summary>
-/// Diagnostics and the live log, kept out of the way of everyday use. Docked layout: a compact status card on
-/// top, the log fills the rest of the window with its own scrollbar (no page scrolling, no empty tail).
+/// Diagnostics and the live log. Docked layout: header and status on top, the log list fills the rest of the
+/// window with its own scrollbar, so the page itself never scrolls and never has an empty tail.
 /// </summary>
-internal sealed class DeveloperPage : Panel
+internal sealed class DeveloperPage : PageBase
 {
-    private readonly IAppHost _host;
-    private readonly VStack _top = new() { Dock = DockStyle.Top, Padding = Padding.Empty, Spacing = 14 };
-    private readonly Card _status = new() { Columns = 2, MinColumnWidth = 300, Spacing = 6 };
-    private readonly HStack _toolbar;
-    private readonly ListView _log = new()
+    private readonly Grid _status = new();
+    private readonly ObservableCollection<LogRow> _rows = [];
+    private readonly Fluent.TextBox _filter = new() { PlaceholderText = "Filter log…", Width = 240, Icon = new Fluent.SymbolIcon { Symbol = Fluent.SymbolRegular.Search24 } };
+    private readonly Fluent.ToggleSwitch _errorsOnly = new() { Content = "Errors only" };
+    private readonly System.Windows.Threading.DispatcherTimer _refresh = new() { Interval = TimeSpan.FromMilliseconds(300) };
+
+    public DeveloperPage(IAppHost host, MainWindow window) : base(host, window, scrolling: false)
     {
-        View = View.Details,
-        FullRowSelect = true,
-        HeaderStyle = ColumnHeaderStyle.None,
-        BorderStyle = BorderStyle.None,
-        Font = Theme.Mono(9f),
-        BackColor = Theme.Surface,
-        ForeColor = Theme.Text,
-        Dock = DockStyle.Fill,
-        ShowItemToolTips = true,
-    };
-    private readonly TextBox _filter = new() { PlaceholderText = "Filter log…", BorderStyle = BorderStyle.FixedSingle, Font = Theme.Body(10f) };
-    private readonly ToggleSwitch _errorsOnly = new(false) { AccessibleName = "Errors only" };
-    private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 300 };
+        var root = new Grid { MaxWidth = 1100, Margin = new Thickness(36, 28, 36, 24) };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Children.Add(Header("Developer", "Diagnostics for when something doesn't sync"));
 
-    public DeveloperPage(IAppHost host)
-    {
-        _host = host;
-        BackColor = Theme.Background;
-        _filter.Width = Measure.Px(this, 220);
+        _status.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _status.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        _status.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _status.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var statusCard = Fx.Card(_status, 18);
+        statusCard.Margin = new Thickness(0, 20, 0, 16);
+        Grid.SetRow(statusCard, 1);
+        root.Children.Add(statusCard);
 
-        var header = new VStack { Spacing = 2, Padding = Padding.Empty };
-        header.Controls.Add(Labels.Title("Developer"));
-        header.Controls.Add(Labels.Muted("Diagnostics for when something doesn't sync", 10f));
-        _top.Controls.Add(header);
-        _top.Controls.Add(_status);
+        var list = new ListView
+        {
+            ItemsSource = _rows,
+            ItemTemplate = (DataTemplate)XamlReader.Parse("""
+                <DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
+                  <Grid Margin='0,1'>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width='4'/><ColumnDefinition Width='100'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>
+                    <Border Background='{Binding Stripe}' CornerRadius='2' Margin='0,2'/>
+                    <TextBlock Grid.Column='1' Text='{Binding Time}' Margin='10,0,0,0' FontFamily='Cascadia Mono, Consolas' FontSize='12' Foreground='#5E6B66'/>
+                    <TextBlock Grid.Column='2' Text='{Binding Message}' ToolTip='{Binding Full}' FontFamily='Cascadia Mono, Consolas' FontSize='12'
+                               Foreground='{Binding Foreground}' TextTrimming='CharacterEllipsis'/>
+                  </Grid>
+                </DataTemplate>
+                """),
+            BorderThickness = new Thickness(0),
+            Background = Fx.Surface,
+        };
+        VirtualizingPanel.SetIsVirtualizing(list, true);
+        VirtualizingPanel.SetVirtualizationMode(list, VirtualizationMode.Recycling);
 
-        var copy = new PillButton("Copy", ButtonKind.Outline, Theme.Glyph.Copy);
-        copy.Click += (_, _) => CopyLog();
-        var openFile = new PillButton("Open log file", ButtonKind.Outline, Theme.Glyph.OpenFile);
-        openFile.Click += (_, _) => Shell.OpenFile(AppLog.Path);
-        var clear = new PillButton("Clear view", ButtonKind.Subtle);
-        clear.Click += (_, _) =>
+        var copy = Fx.Secondary("Copy", Fluent.SymbolRegular.Copy24, CopyLog);
+        var openFile = Fx.Secondary("Open log file", Fluent.SymbolRegular.Open24, () => Shell.OpenFile(AppLog.Path));
+        var clear = Fx.Subtle("Clear view", Fluent.SymbolRegular.Delete24, () =>
         {
             AppLog.ClearRecent();
             RenderLog();
-        };
-        var title = Labels.Heading("Activity log");
-        _toolbar = new HStack { Dock = DockStyle.Top, Fill = title, Wrap = true, MinFillWidth = 120, Padding = new Padding(0, 0, 0, 8) }
-            .With(title, _filter, Labels.Make("Errors only", Theme.Body(9f), Theme.Muted, singleLine: true), _errorsOnly, copy, openFile, clear);
-        var logCard = new Surface { Dock = DockStyle.Fill, Padding = new Padding(Measure.Px(this, 16)) };
-        logCard.Controls.Add(_log);
-        logCard.Controls.Add(_toolbar);
-
-        Controls.Add(logCard);
-        Controls.Add(new Panel { Dock = DockStyle.Top, Height = Measure.Px(this, 14), BackColor = Theme.Background });
-        Controls.Add(_top);
-
-        _log.Columns.Add("Time", Measure.Px(this, 100));
-        _log.Columns.Add("Message", Measure.Px(this, 800));
-        _log.Resize += (_, _) => _log.Columns[1].Width = Math.Max(Measure.Px(this, 200), _log.ClientSize.Width - _log.Columns[0].Width - 4);
+        });
+        var tools = Fx.Wrap(10, _filter, _errorsOnly, copy, openFile, clear);
+        _errorsOnly.VerticalAlignment = VerticalAlignment.Center;
+        var head = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
+        var title = Fx.Heading("Activity log");
+        title.Margin = new Thickness(0, 6, 24, 10);
+        DockPanel.SetDock(title, Dock.Left);
+        head.Children.Add(title);
+        head.Children.Add(tools);
+        var logGrid = new Grid();
+        logGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        logGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        logGrid.Children.Add(head);
+        Grid.SetRow(list, 1);
+        logGrid.Children.Add(list);
+        var logCard = Fx.Card(logGrid, 18, lift: false);
+        Grid.SetRow(logCard, 2);
+        root.Children.Add(logCard);
+        Content = root;
 
         _filter.TextChanged += (_, _) => RenderLog();
-        _errorsOnly.CheckedChanged += (_, _) => RenderLog();
+        _errorsOnly.Checked += (_, _) => RenderLog();
+        _errorsOnly.Unchecked += (_, _) => RenderLog();
         _refresh.Tick += (_, _) =>
         {
             _refresh.Stop();
             RenderLog();
         };
-        _host.StatusChanged += OnStatus;
+        Host.StatusChanged += OnStatus;
         AppLog.Logged += OnLogged;
         RenderStatus();
         RenderLog();
     }
 
-    protected override void OnLayout(LayoutEventArgs levent)
-    {
-        if (_toolbar is null)
-        {
-            base.OnLayout(levent);
-            return;
-        }
-        Measure.CenterColumn(this, 1100, 32, 24, 24);
-        int w = ClientSize.Width - Padding.Horizontal;
-        if (w > 0)
-        {
-            int top = _top.MeasureHeight(w);
-            if (_top.Height != top) _top.Height = top;
-            int tb = _toolbar.MeasureHeight(w - Measure.Px(this, 32));
-            if (_toolbar.Height != tb) _toolbar.Height = tb;
-        }
-        base.OnLayout(levent);
-    }
-
-    private void Post(Action action)
-    {
-        if (IsDisposed || !IsHandleCreated) return;
-        try
-        {
-            BeginInvoke(action);
-        }
-        catch (InvalidOperationException)
-        {
-        }
-    }
-
     private void OnStatus() => Post(RenderStatus);
 
-    // Entries can arrive in bursts; redraw the list at most ~3 times a second.
-    private void OnLogged(LogEntry e) => Post(() => { if (!_refresh.Enabled) _refresh.Start(); });
+    // Entries arrive in bursts; redraw at most ~3 times a second.
+    private void OnLogged(LogEntry e) => Post(() => { if (!_refresh.IsEnabled) _refresh.Start(); });
 
     private void RenderStatus()
     {
-        _status.SuspendLayout();
-        foreach (Control c in _status.Controls.Cast<Control>().ToList()) c.Dispose();
-        _status.Controls.Clear();
+        _status.Children.Clear();
+        _status.RowDefinitions.Clear();
         string version = Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "dev";
-        var connected = _host.ConnectedDevices;
+        var connected = Host.ConnectedDevices;
         var rows = new (string, string)[]
         {
-            ("Status", _host.StatusText),
+            ("Status", Host.StatusText),
             ("Version", version),
-            ("Connected", connected.Count == 0 ? "—" : string.Join(", ", connected.Select(d => $"{d.Name} ({_host.AddressOf(d) ?? "?"})"))),
-            ("Listening port", _host.Port.ToString(CultureInfo.InvariantCulture)),
-            ("Paired", _host.PairedDevices.Count == 0 ? "—" : string.Join(", ", _host.PairedDevices.Select(d => d.Name))),
-            ("Local addresses", string.Join(", ", LanDiscovery.LocalAddresses(_host.Port).Select(a => a.Host))),
-            ("Device ID", _host.DeviceId),
-            ("Fingerprint", _host.Fingerprint),
+            ("Connected", connected.Count == 0 ? "—" : string.Join(", ", connected.Select(d => $"{d.Name} ({Host.AddressOf(d) ?? "?"})"))),
+            ("Listening port", Host.Port.ToString(CultureInfo.InvariantCulture)),
+            ("Paired", Host.PairedDevices.Count == 0 ? "—" : string.Join(", ", Host.PairedDevices.Select(d => d.Name))),
+            ("Local addresses", string.Join(", ", LanDiscovery.LocalAddresses(Host.Port).Select(a => a.Host))),
+            ("Device ID", Host.DeviceId),
+            ("Fingerprint", Host.Fingerprint),
+            ("Windows 11 menu", Host.ModernMenu.ToString()),
             ("Log file", AppLog.Path),
         };
-        foreach (var (k, v) in rows)
+        for (int i = 0; i < rows.Length; i++)
         {
-            var key = Labels.Make(k, Theme.Body(9f), Theme.Muted, singleLine: true);
-            key.MinimumSize = new Size(Measure.Px(this, 110), 0);
-            var value = Labels.Make(v, Theme.Mono(9f), Theme.Text);
-            _status.Controls.Add(new HStack { Fill = value, Spacing = 8, MinFillWidth = 120 }.With(key, value));
+            int r = i / 2, c = i % 2 * 2;
+            if (c == 0) _status.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var key = Fx.Caption(rows[i].Item1);
+            key.Margin = new Thickness(c == 0 ? 0 : 24, 5, 14, 5);
+            var value = new TextBox
+            {
+                Text = rows[i].Item2,
+                IsReadOnly = true,
+                BorderThickness = new Thickness(0),
+                Background = Fx.Transparent,
+                FontFamily = Fx.Mono,
+                FontSize = 12.5,
+                Foreground = Fx.Ink,
+                TextWrapping = TextWrapping.Wrap,
+                Padding = new Thickness(0),
+                Margin = new Thickness(0, 5, 0, 5),
+                VerticalAlignment = VerticalAlignment.Center,
+                Style = null,
+            };
+            Grid.SetRow(key, r);
+            Grid.SetColumn(key, c);
+            Grid.SetRow(value, r);
+            Grid.SetColumn(value, c + 1);
+            _status.Children.Add(key);
+            _status.Children.Add(value);
         }
-        _status.ResumeLayout();
-        PerformLayout();
     }
 
     private void RenderLog()
     {
         string q = _filter.Text.Trim();
-        var entries = AppLog.Entries()
-            .Where(e => !_errorsOnly.Checked || e.IsError)
-            .Where(e => q.Length == 0 || e.Message.Contains(q, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        _log.BeginUpdate();
-        _log.Items.Clear();
-        foreach (var e in entries)
+        bool errorsOnly = _errorsOnly.IsChecked == true;
+        _rows.Clear();
+        foreach (var e in AppLog.Entries())
         {
-            string firstLine = e.Message.Split('\n', 2)[0].TrimEnd('\r');
-            _log.Items.Add(new ListViewItem([e.Time.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture), firstLine])
-            {
-                ForeColor = e.IsError ? Theme.Danger : Theme.Text,
-                BackColor = e.IsError ? Theme.DangerBg : Theme.Surface,
-                ToolTipText = e.Message,
-            });
+            if (errorsOnly && !e.IsError) continue;
+            if (q.Length > 0 && !e.Message.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+            _rows.Add(new LogRow(e));
         }
-        _log.EndUpdate();
     }
 
-    private static void CopyLog()
+    private void CopyLog()
     {
         string text = string.Join(Environment.NewLine, AppLog.Entries().Select(e =>
             $"{e.Time.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} {(e.IsError ? "ERROR" : "INFO ")} {e.Message}"));
-        if (text.Length > 0) Clipboard.SetText(text);
+        if (text.Length == 0) return;
+        System.Windows.Clipboard.SetText(text);
+        Window.Toast("Log copied");
     }
 
-    protected override void Dispose(bool disposing)
+    protected override void OnDispose()
     {
-        if (disposing)
-        {
-            _host.StatusChanged -= OnStatus;
-            AppLog.Logged -= OnLogged;
-            _refresh.Dispose();
-        }
-        base.Dispose(disposing);
+        Host.StatusChanged -= OnStatus;
+        AppLog.Logged -= OnLogged;
+        _refresh.Stop();
+    }
+
+    internal sealed class LogRow(LogEntry e)
+    {
+        public string Time { get; } = e.Time.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture);
+        public string Message { get; } = e.Message.Split('\n', 2)[0].TrimEnd('\r');
+        public string Full { get; } = e.Message;
+        public Brush Foreground { get; } = e.IsError ? Fx.Danger : Fx.Ink;
+        public Brush Stripe { get; } = e.IsError ? Fx.Danger : Fx.HighlightStrong;
     }
 }

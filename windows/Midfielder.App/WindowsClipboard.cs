@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using Midfielder.Core.Clip;
+using System.Windows.Forms;
 
 namespace Midfielder.App;
 

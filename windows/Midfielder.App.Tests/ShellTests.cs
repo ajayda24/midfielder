@@ -1,5 +1,7 @@
 using Microsoft.Win32;
 using Xunit;
+using System.Drawing;
+using System.Windows.Forms;
 
 namespace Midfielder.App.Tests;
 

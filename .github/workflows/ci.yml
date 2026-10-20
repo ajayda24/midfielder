@@ -130,6 +130,38 @@ jobs:
         run: >-
           dotnet publish windows/Midfielder.App -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build the Windows 11 context-menu handler (MidfielderShell.dll)
+        run: msbuild windows/Midfielder.Shell/MidfielderShell.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
+      - name: Pack and sign the sparse package (Midfielder.msix)
+        shell: pwsh
+        run: |
+          $kit = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory -Filter "10.*" |
+            Where-Object { Test-Path (Join-Path $_.FullName "x64\makeappx.exe") } | Sort-Object Name | Select-Object -Last 1
+          $makeappx = Join-Path $kit.FullName "x64\makeappx.exe"
+          $signtool = Join-Path $kit.FullName "x64\signtool.exe"
+          Copy-Item windows/Midfielder.Shell/bin/MidfielderShell.dll publish/
+          $stage = New-Item -ItemType Directory -Force msix-stage
+          Copy-Item windows/packaging/Assets -Destination $stage -Recurse
+          (Get-Content windows/packaging/AppxManifest.xml -Raw) -replace 'Version="1.0.0.0"', 'Version="1.0.${{ github.run_number }}.0"' |
+            Set-Content (Join-Path $stage AppxManifest.xml) -Encoding utf8
+          & $makeappx pack /d $stage /p publish/Midfielder.msix /nv /o
+          if ($LASTEXITCODE -ne 0) { throw "makeappx failed" }
+          & $signtool sign /fd SHA256 /f windows/packaging/midfielder-sideload.pfx /p midfielder-sideload publish/Midfielder.msix
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+          Copy-Item windows/packaging/midfielder-sideload.cer publish/
+          Get-ChildItem publish | Format-Table Name, Length
+      - name: Check the sparse package registers (what "Enable Windows 11 menu" does)
+        shell: pwsh
+        run: |
+          Import-Certificate -FilePath publish/midfielder-sideload.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          $dir = (Resolve-Path publish).Path
+          Add-AppxPackage -Path (Join-Path $dir Midfielder.msix) -ExternalLocation $dir
+          $pkg = Get-AppxPackage -Name Midfielder
+          if (-not $pkg) { throw "sparse package not registered" }
+          $pkg | Format-List Name, Version, PackageFullName, InstallLocation
+          Remove-AppxPackage -Package $pkg.PackageFullName
+          Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -eq 'CN=Midfielder sideload' | Remove-Item
       - uses: actions/upload-artifact@v4
         with:
           name: midfielder-windows

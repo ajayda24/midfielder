@@ -33,4 +33,20 @@ internal interface IAppHost
 
     /// <summary>Persists <see cref="Settings"/> (e.g. after the window saved its size).</summary>
     void SaveSettings();
+
+    /// <summary>The Windows 11 top-level "Send to phone" entry (sparse package).</summary>
+    ModernMenuStatus ModernMenu { get; }
+
+    /// <summary>Turns the Windows 11 entry on (one UAC prompt the first time) or off. Returns a message for the user.</summary>
+    Task<string> SetModernMenuAsync(bool on);
+}
+
+internal enum ModernMenuStatus
+{
+    /// <summary>Not available here: Windows 10, or the package files aren't next to the exe.</summary>
+    Unavailable,
+    Off,
+    On,
+    /// <summary>Registered for another folder: the exe was moved.</summary>
+    NeedsRepair,
 }

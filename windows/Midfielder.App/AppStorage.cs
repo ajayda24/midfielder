@@ -3,6 +3,8 @@ using System.Text.Json;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Net;
 using Midfielder.Protocol;
+using System.Drawing;
+using System.Windows.Forms;
 
 namespace Midfielder.App;
 

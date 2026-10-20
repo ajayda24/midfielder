@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using Makaretu.Dns;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Discovery;
+using System.Drawing;
+using System.Windows.Forms;
 
 namespace Midfielder.App;
 

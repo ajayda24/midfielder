@@ -9,6 +9,8 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
+  <!-- Ties the exe to the optional sparse package (Windows 11 right-click menu). Harmless when it isn't registered. -->
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1" publisher="CN=Midfielder sideload" packageName="Midfielder" applicationId="Midfielder" />
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10 and 11 -->

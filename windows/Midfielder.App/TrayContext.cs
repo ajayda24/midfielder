@@ -9,13 +9,15 @@ using Midfielder.Core.Net;
 using Midfielder.Core.Transfer;
 using Midfielder.App.Ui;
 using Midfielder.Protocol;
+using System.Drawing;
+using System.Windows.Forms;
 
 namespace Midfielder.App;
 
 /// <summary>
 /// The whole Windows app: a tray icon and no windows until you ask for one. Clipboard changes arrive as
 /// window messages, network traffic as async I/O completions; between events the process is idle and runs
-/// under EcoQoS (efficiency mode). The main window (<see cref="MainForm"/>) exists only while it is open.
+/// under EcoQoS (efficiency mode). The main window (<see cref="MainWindow"/>, WPF) exists only while it is open.
 /// </summary>
 internal sealed class TrayContext : ApplicationContext, IAppHost
 {
@@ -40,8 +42,8 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
     private readonly ConcurrentDictionary<Fingerprint, string> _peerHosts = new();
     private readonly List<string> _pendingSends = [];
     private readonly int _port;
-    private PairingForm? _pairingForm;
-    private MainForm? _mainForm;
+    private PairingWindow? _pairingForm;
+    private MainWindow? _mainForm;
     private readonly HistoryStore _history;
     private readonly TransferTracker _transfers = new();
     private readonly ConcurrentDictionary<string, (TransferOffer Offer, string From)> _incomingOffers = new(StringComparer.Ordinal);
@@ -129,12 +131,13 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         if (_settings.StartWithWindows) TryRun(() => Shell.SetAutostart(true));
         TryRun(Shell.EnsureSendToShortcut);
         // Re-registered on each start so the entry follows the exe if it was moved.
-        TryRun(() => Shell.SetContextMenu(_settings.ContextMenu));
-        if (args.Contains("--send")) _pendingSends.AddRange(args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)));
+        TryRun(() => Shell.SetContextMenu(_settings.ContextMenu && ModernMenu.Status != ModernMenuStatus.On));
+        _ = ModernMenu.RepairIfMovedAsync();
+        _pendingSends.AddRange(SendArgs.Expand(SendArgs.Paths(args)));
 
         UpdateStatus();
         NativeMethods.SetEfficiencyMode(true);
-        if (!args.Contains("--background") && !args.Contains("--send"))
+        if (!args.Contains("--background") && !SendArgs.IsSend(args))
         {
             ShowMain();
             ShowPairingIfNoDevices();
@@ -159,7 +162,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(open);
         menu.Items.Add("Send files to phone…", null, (_, _) => PickAndSendFiles());
-        menu.Items.Add("Received files", null, (_, _) => ShowMain(Ui.MainForm.FilesName));
+        menu.Items.Add("Received files", null, (_, _) => ShowMain(MainWindow.FilesName));
         menu.Items.Add(sync);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
@@ -169,20 +172,15 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
     /// <summary>Opens (or brings to front) the main window. Closing it disposes it completely.</summary>
     private void ShowMain(string? page = null)
     {
-        if (_mainForm is { IsDisposed: false })
+        if (_mainForm is not null)
         {
             if (page is not null) _mainForm.ShowPage(page);
-            if (_mainForm.WindowState == FormWindowState.Minimized) _mainForm.WindowState = FormWindowState.Normal;
+            if (_mainForm.WindowState == System.Windows.WindowState.Minimized) _mainForm.WindowState = System.Windows.WindowState.Normal;
             _mainForm.Activate();
             return;
         }
-        _mainForm = new MainForm(this, page ?? Ui.MainForm.HomeName);
-        _mainForm.FormClosed += (_, _) =>
-        {
-            var f = _mainForm;
-            _mainForm = null;
-            f?.Dispose();
-        };
+        _mainForm = new MainWindow(this, page ?? MainWindow.HomeName);
+        _mainForm.Closed += (_, _) => _mainForm = null;
         _mainForm.Show();
         _mainForm.Activate();
     }
@@ -217,20 +215,20 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
 
     private void ShowPairing()
     {
-        if (_pairingForm is { IsDisposed: false })
+        if (_pairingForm is not null)
         {
             _pairingForm.Activate();
             return;
         }
         var invite = _node.OpenPairing(LanDiscovery.LocalAddresses(_port));
-        _pairingForm = new PairingForm(invite);
-        _pairingForm.FormClosed += (_, _) =>
+        _pairingForm = new PairingWindow(invite);
+        _pairingForm.Closed += (_, _) =>
         {
             _node.ClosePairing();
-            _pairingForm?.Dispose();
             _pairingForm = null;
         };
         _pairingForm.Show();
+        _pairingForm.Activate();
     }
 
     private void OnPaired(PairedDevice device)
@@ -356,7 +354,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             return;
         }
         // Explorer's right-click starts one process per selected file: gather them into a single send.
-        _sendBatch.AddRange(lines.Where(File.Exists));
+        _sendBatch.AddRange(SendArgs.Expand(lines));
         _sendBatchTimer.Stop();
         _sendBatchTimer.Start();
     }
@@ -426,7 +424,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _ui.Post(_ =>
         {
             if (status == TransferStatus.Done) Notify("Sent", sources.Count == 1 ? $"{sources[0].Name} sent to {peer.Name}" : $"{sources.Count} files sent to {peer.Name}");
-            else if (status == TransferStatus.Failed) Notify("Not sent", Describe(result), ToolTipIcon.Warning, () => ShowMain(Ui.MainForm.FilesName));
+            else if (status == TransferStatus.Failed) Notify("Not sent", Describe(result), ToolTipIcon.Warning, () => ShowMain(MainWindow.FilesName));
         }, null);
     }
 
@@ -534,7 +532,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
                 }
                 else
                 {
-                    Notify("Received", $"{records.Count} files from {from.Name}. Click to see them.", onClick: () => ShowMain(Ui.MainForm.FilesName));
+                    Notify("Received", $"{records.Count} files from {from.Name}. Click to see them.", onClick: () => ShowMain(MainWindow.FilesName));
                 }
             }
             else if (result is TransferResult.Failed)
@@ -687,6 +685,25 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _storage.SaveSettings(_settings);
     }
 
+    ModernMenuStatus IAppHost.ModernMenu => ModernMenu.Status;
+
+    public async Task<string> SetModernMenuAsync(bool on)
+    {
+        try
+        {
+            string message = on ? await ModernMenu.EnableAsync().ConfigureAwait(true) : await ModernMenu.DisableAsync().ConfigureAwait(true);
+            // Classic entry: hidden while the modern one is active (it would be listed twice), restored when it isn't.
+            TryRun(() => Shell.SetContextMenu(_settings.ContextMenu && ModernMenu.Status != ModernMenuStatus.On));
+            AppLog.Info($"Windows 11 menu {(on ? "enable" : "disable")}: {message}");
+            return message;
+        }
+        catch (Exception e)
+        {
+            AppLog.Error("Changing the Windows 11 menu failed", e);
+            return "Couldn't change the Windows 11 menu: " + e.Message;
+        }
+    }
+
     public void SaveSettings() => _storage.SaveSettings(_settings);
 
     public void SetReceiveFolder(string path)
@@ -775,7 +792,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
             _cts.Cancel();
-            _mainForm?.Dispose();
+            _mainForm?.Close();
             _sendBatchTimer.Dispose();
             _history.Dispose();
             _clipDebounce.Dispose();
@@ -785,7 +802,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             _discovery.Dispose();
             _node.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _identity.Dispose();
-            _pairingForm?.Dispose();
+            _pairingForm?.Close();
             _tray.ContextMenuStrip?.Dispose();
             _tray.Dispose();
             _cts.Dispose();
