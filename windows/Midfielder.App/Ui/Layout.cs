@@ -36,12 +36,17 @@ internal static class Measure
         }
     }
 
-    /// <summary>Natural (single-line) width; labels measure their text, everything else keeps its width.</summary>
+    // Width a control had before any stack arranged it. Arranging may shrink a control to fit a narrow row;
+    // measuring must not read that shrunken width back, or the control stays clipped after the row widens.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, object> Natural = new();
+
+    /// <summary>Natural (single-line) width; labels measure their text, everything else its own size.</summary>
     public static int Width(Control c) => c switch
     {
         Label l => Math.Max(l.MinimumSize.Width, TextRenderer.MeasureText(l.Text.Length == 0 ? " " : l.Text, l.Font, Size.Empty, Line).Width + l.Padding.Horizontal + 2),
         HStack h => h.NaturalWidth(),
-        _ => c.Width,
+        PillButton b => b.GetPreferredSize(Size.Empty).Width,
+        _ => (int)Natural.GetValue(c, k => k.Width),
     };
 
     /// <summary>Side padding that keeps a docked page's content in a centered column of at most <paramref name="maxLogical"/> px.</summary>

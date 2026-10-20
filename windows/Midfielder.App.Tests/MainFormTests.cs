@@ -113,6 +113,10 @@ public sealed partial class MainFormTests : IDisposable
             {
                 problems.Add($"{where}: card height {card.Height} vs content {card.MeasureHeight(card.Width)}");
             }
+            if (c is PillButton b && b.Width < b.GetPreferredSize(Size.Empty).Width - 1)
+            {
+                problems.Add($"{where}: button '{b.Text}' clipped ({b.Width} < {b.GetPreferredSize(Size.Empty).Width})");
+            }
             if (c is VScrollBar or HScrollBar) continue;
             var r = c.RectangleToScreen(c.ClientRectangle);
             if (r.Width > 0 && r.Right > pageRect.Right + 1) problems.Add($"{where}: {c.GetType().Name} '{c.Text}' overflows by {r.Right - pageRect.Right}px");
