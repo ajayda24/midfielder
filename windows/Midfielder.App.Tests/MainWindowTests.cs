@@ -127,6 +127,15 @@ public sealed partial class MainWindowTests : IDisposable
         }
     }
 
+    private static IEnumerable<W.DependencyObject> LogicalDescendants(W.DependencyObject root)
+    {
+        foreach (var c in W.LogicalTreeHelper.GetChildren(root).OfType<W.DependencyObject>())
+        {
+            yield return c;
+            foreach (var d in LogicalDescendants(c)) yield return d;
+        }
+    }
+
     private static IEnumerable<W.DependencyObject> Ancestors(W.DependencyObject e)
     {
         for (var p = W.Media.VisualTreeHelper.GetParent(e); p is not null; p = W.Media.VisualTreeHelper.GetParent(p)) yield return p;
@@ -136,7 +145,9 @@ public sealed partial class MainWindowTests : IDisposable
     {
         window.ShowPage(MainWindow.FilesName);
         Pump(100);
-        var toggle = Descendants(window).OfType<Wpf.Ui.Controls.Button>().First(b => b.Content is "Gallery" or "List");
+        EnsureLaidOut(window);
+        var toggle = Descendants(window).Concat(LogicalDescendants(window)).OfType<Wpf.Ui.Controls.Button>()
+            .First(b => b.Content is "Gallery" or "List");
         toggle.RaiseEvent(new W.RoutedEventArgs(W.Controls.Primitives.ButtonBase.ClickEvent));
     }
 
