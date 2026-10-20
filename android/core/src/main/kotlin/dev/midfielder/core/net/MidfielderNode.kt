@@ -440,10 +440,12 @@ public class MidfielderNode(
         peer: Fingerprint,
         sources: List<FileSource>,
         purpose: TransferPurpose = TransferPurpose.TRANSFER_PURPOSE_FILE,
+        transferId: String = newTransferId(),
     ): TransferResult {
         require(sources.size in 1..Limits.MAX_FILES_PER_OFFER) { "1..${Limits.MAX_FILES_PER_OFFER} files" }
+        require(Hex.isLowerHex(transferId, Limits.TRANSFER_ID_HEX_CHARS)) { "bad transfer id" }
         val session = session(peer) ?: throw NotConnectedException("peer not connected")
-        val id = Hex.encode(ByteArray(Limits.TRANSFER_ID_HEX_CHARS / 2).also { random.nextBytes(it) })
+        val id = transferId
         val offer = TransferOffer(
             transfer_id = id,
             files = sources.map {
@@ -477,7 +479,7 @@ public class MidfielderNode(
                     for (i in t.sources.indices) {
                         if (t.isDone(i)) continue
                         runDataAsDialer(session, t.id, i) { input, output ->
-                            TransferEngine.send(input, output, t.sources[i], t.offer.files[i], progressFor(t.id))
+                            TransferEngine.send(input, output, t.sources[i], t.offer.files[i], progressFor(t.id, t.offer, i))
                         }
                         t.markDone(i)
                     }
@@ -569,7 +571,7 @@ public class MidfielderNode(
                 for (i in t.sinks.indices) {
                     if (t.isDone(i)) continue
                     runDataAsDialer(session, t.id, i) { input, output ->
-                        val location = TransferEngine.receive(input, output, t.sinks[i], t.offer.files[i], progressFor(t.id))
+                        val location = TransferEngine.receive(input, output, t.sinks[i], t.offer.files[i], progressFor(t.id, t.offer, i))
                         t.markDone(i, location)
                     }
                 }
@@ -607,7 +609,7 @@ public class MidfielderNode(
         val out = outgoing[open.transfer_id]
         if (out != null && out.peer == peerFp) {
             if (index !in out.sources.indices) throw ProtocolException("bad file index")
-            TransferEngine.send(input, output, out.sources[index], out.offer.files[index], progressFor(out.id))
+            TransferEngine.send(input, output, out.sources[index], out.offer.files[index], progressFor(out.id, out.offer, index))
             if (out.markDone(index)) out.result.complete(TransferResult.Completed(emptyList()))
             return
         }
@@ -615,7 +617,7 @@ public class MidfielderNode(
         if (inc != null && inc.from.fingerprint == peerFp) {
             if (index !in inc.sinks.indices) throw ProtocolException("bad file index")
             inc.touchedAt = config.clock()
-            val location = TransferEngine.receive(input, output, inc.sinks[index], inc.offer.files[index], progressFor(inc.id))
+            val location = TransferEngine.receive(input, output, inc.sinks[index], inc.offer.files[index], progressFor(inc.id, inc.offer, index))
             if (inc.markDone(index, location)) finishIncoming(inc, null)
             return
         }
@@ -684,9 +686,19 @@ public class MidfielderNode(
         events.onTransferFinished(t.id, t.from, TransferResult.Cancelled)
     }
 
-    private fun progressFor(id: String) = TransferEngine.Progress { done, total ->
-        events.onTransferProgress(id, done, total)
+    /** Reports progress across the whole transfer, not per file: bytes of earlier files count as done. */
+    private fun progressFor(id: String, offer: TransferOffer, index: Int): TransferEngine.Progress {
+        var before = 0L
+        var all = 0L
+        offer.files.forEachIndexed { i, f ->
+            all = Math.addExact(all, f.size)
+            if (i < index) before = Math.addExact(before, f.size)
+        }
+        return TransferEngine.Progress { done, _ -> events.onTransferProgress(id, before + done, all) }
     }
+
+    /** A fresh transfer id, for callers that want to track a send before it starts. */
+    public fun newTransferId(): String = Hex.encode(ByteArray(Limits.TRANSFER_ID_HEX_CHARS / 2).also { random.nextBytes(it) })
 
     // ---------------------------------------------------------------------------------------------
 

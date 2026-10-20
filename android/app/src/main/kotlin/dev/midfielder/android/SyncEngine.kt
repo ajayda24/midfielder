@@ -13,6 +13,10 @@ import dev.midfielder.core.clip.ClipResult
 import dev.midfielder.core.clip.ClipSync
 import dev.midfielder.core.clip.ClipboardHistory
 import dev.midfielder.core.crypto.PairingInvite
+import dev.midfielder.core.history.Direction
+import dev.midfielder.core.history.RecordStatus
+import dev.midfielder.core.history.TransferRecord
+import dev.midfielder.core.history.TransferTracker
 import dev.midfielder.core.net.MidfielderNode
 import dev.midfielder.core.net.NodeConfig
 import dev.midfielder.core.net.NodeEvents
@@ -63,6 +67,7 @@ class SyncEngine(context: Context) : Closeable {
     private val clipboard = ClipboardBridge(app)
     private val locks = TransferLocks(app)
     private val clipTransfers = ConcurrentHashMap.newKeySet<String>()
+    private val incomingOffers = ConcurrentHashMap<String, TransferOffer>()
     private val lastProgressUi = ConcurrentHashMap<String, Long>()
     private val _status = MutableStateFlow(Status())
     val status: StateFlow<Status> get() = _status
@@ -70,11 +75,21 @@ class SyncEngine(context: Context) : Closeable {
     @Volatile
     var uiInForeground = false
 
+    /** File history and usage counters (shared with the UI). */
+    val history: HistoryStore = HistoryStore.get(app)
+
+    /** Transfers that are moving bytes right now, for progress cards in the UI. */
+    val transfers: TransferTracker = TransferTracker(SystemClock::elapsedRealtime)
+
+    val deviceId: String get() = identity.deviceId
+    val fingerprint: String get() = identity.fingerprint.display()
+
     private val events: NodeEvents = object : NodeEvents {
         override fun onPaired(device: PairedDevice) = refreshStatus("Paired with ${device.name}")
 
         override fun onPeerConnected(session: PeerSession) {
             clipSync.catchUpItem()?.let { session.trySend(Envelope(clipboard = it)) }
+            flushWaitingSends()
             refreshStatus("Connected to ${session.peer.name}")
         }
 
@@ -91,6 +106,7 @@ class SyncEngine(context: Context) : Closeable {
                 return
             }
             EventLog.add("Clipboard from ${from.name}: ${item.kind.name.removePrefix("CLIP_KIND_").lowercase()}, ${item.size} bytes -> $result")
+            if (result == ClipResult.APPLIED) history.recordClip(Direction.RECEIVED)
         }
 
         override suspend fun onTransferOffer(from: PairedDevice, offer: TransferOffer): List<FileSink>? {
@@ -101,15 +117,21 @@ class SyncEngine(context: Context) : Closeable {
             }
             if (!storage.acceptFiles) return null
             locks.acquire()
+            incomingOffers[offer.transfer_id] = offer
+            transfers.start(offer.transfer_id, Direction.RECEIVED, titleOf(offer.files.map { it.name }), from.name, offer.files.sumOf { it.size })
             return offer.files.mapIndexed { i, f -> MediaStoreFileSink(app, "${offer.transfer_id}-$i", f.name, f.mime) }
         }
 
         override fun onTransferProgress(transferId: String, transferred: Long, total: Long) {
-            if (transferId in clipTransfers) return
+            // Clipboard-image transfers aren't tracked: they're shown as a clipboard change, not a file.
+            if (!transfers.contains(transferId)) return
+            transfers.progress(transferId, transferred, total)
             val now = SystemClock.elapsedRealtime()
             if (transferred < total && now - (lastProgressUi[transferId] ?: 0L) < PROGRESS_UI_MS) return
             lastProgressUi[transferId] = now
-            notifications.progress(transferId, "Transferring…", transferred, total)
+            val t = transfers.active.value.firstOrNull { it.id == transferId } ?: return
+            val verb = if (t.direction == Direction.SENT) "Sending" else "Receiving"
+            notifications.progress(transferId, "$verb ${t.title}", transferred, total)
         }
 
         override fun onTransferFinished(transferId: String, from: PairedDevice, result: TransferResult) {
@@ -119,10 +141,24 @@ class SyncEngine(context: Context) : Closeable {
                 return
             }
             locks.release()
+            transfers.finish(transferId)
+            val offer = incomingOffers.remove(transferId)
             when (result) {
-                is TransferResult.Completed ->
-                    notifications.finished(transferId, "Received from ${from.name}", "${result.locations.size} file(s) in Download/Midfielder")
-                is TransferResult.Failed -> notifications.finished(transferId, "Transfer from ${from.name} failed", result.reason)
+                is TransferResult.Completed -> {
+                    val records = offer?.let { receivedRecords(transferId, it, from, result.locations) }.orEmpty()
+                    history.add(records)
+                    history.recordFiles(Direction.RECEIVED, records.size, records.sumOf { it.size })
+                    EventLog.add("Received ${records.size} file(s) from ${from.name}")
+                    notifications.finished(
+                        transferId, "Received from ${from.name}",
+                        records.singleOrNull()?.name ?: "${records.size} files in Download/Midfielder",
+                        openRecordId = records.singleOrNull()?.id,
+                    )
+                }
+                is TransferResult.Failed -> {
+                    EventLog.add("Transfer from ${from.name} failed: ${result.reason}")
+                    notifications.finished(transferId, "Transfer from ${from.name} failed", result.reason)
+                }
                 TransferResult.Cancelled -> notifications.cancel(transferId)
             }
         }
@@ -136,8 +172,12 @@ class SyncEngine(context: Context) : Closeable {
 
     val clipSync: ClipSync = ClipSync(
         identity.deviceId, scope,
-        broadcast = { EventLog.add("Clipboard sent to ${node.broadcastClipboard(it)} PC(s)") },
-        apply = { content, _ -> clipboard.write(content) },
+        broadcast = {
+            val n = node.broadcastClipboard(it)
+            EventLog.add("Clipboard sent to $n PC(s)")
+            if (n > 0) history.recordClip(Direction.SENT)
+        },
+        apply = { content, _ -> applyToClipboard(content) },
         history = ClipboardHistory(maxItems = 50, maxTotalBytes = 8L * 1024 * 1024),
     ).apply { enabled = storage.syncClipboard }
 
@@ -161,6 +201,7 @@ class SyncEngine(context: Context) : Closeable {
         }
         connections.start()
         triggers.start()
+        ShareShortcuts.update(app, storage.trustStore.all())
         refreshStatus("Started")
     }
 
@@ -180,12 +221,14 @@ class SyncEngine(context: Context) : Closeable {
     suspend fun pair(invite: PairingInvite): PairedDevice {
         val session = node.pair(invite)
         storage.trustStore.put(session.peer.copy(lastAddress = session.remote.toString()))
+        ShareShortcuts.update(app, storage.trustStore.all())
         refreshStatus("Paired with ${session.peer.name}")
         return session.peer
     }
 
     fun unpairAll() {
         for (d in storage.trustStore.all()) node.unpair(d.fingerprint)
+        ShareShortcuts.update(app, storage.trustStore.all())
         refreshStatus("Forgot paired PCs")
     }
 
@@ -249,31 +292,39 @@ class SyncEngine(context: Context) : Closeable {
         is ClipContent.Image -> "image, ${c.png.size / 1024} KB"
     }
 
-    fun sendUris(uris: List<Uri>) {
-        val sources = uris.mapNotNull { runCatching { UriFileSource(app, it) }.getOrNull() }
-        if (sources.isNotEmpty()) sendToPcs(sources, TransferPurpose.TRANSFER_PURPOSE_FILE)
+    /** Sends files to [targetShortcutId]'s PC (from Direct Share) or the first connected PC. */
+    fun sendUris(uris: List<Uri>, targetShortcutId: String? = null) {
+        val sources = uris.mapNotNull { uri ->
+            runCatching { UriFileSource(app, uri) }.onFailure { EventLog.error("Can't read $uri", it) }.getOrNull()
+        }
+        if (sources.isNotEmpty()) sendToPcs(sources, TransferPurpose.TRANSFER_PURPOSE_FILE, targetShortcutId)
     }
 
-    private fun sendToPcs(sources: List<FileSource>, purpose: TransferPurpose) {
-        val target = node.connectedPeers.value.firstOrNull()
+    fun cancelTransfer(id: String) = node.cancelTransfer(id)
+
+    private fun sendToPcs(sources: List<FileSource>, purpose: TransferPurpose, targetShortcutId: String? = null) {
+        val peers = node.connectedPeers.value
+        val target = peers.firstOrNull { ShareShortcuts.idFor(it) == targetShortcutId } ?: peers.firstOrNull()
         if (target == null) {
+            // Typical right after a share starts the service: hold the files briefly and send once connected.
+            if (purpose == TransferPurpose.TRANSFER_PURPOSE_FILE) {
+                synchronized(waitingSends) { waitingSends += WaitingSend(sources, targetShortcutId, SystemClock.elapsedRealtime()) }
+                EventLog.add("PC not connected: ${sources.size} file(s) will be sent when it connects")
+            }
             refreshStatus("PC not connected")
             connections.kick("send")
             return
         }
+        val isFile = purpose == TransferPurpose.TRANSFER_PURPOSE_FILE
+        val id = node.newTransferId()
+        if (isFile) transfers.start(id, Direction.SENT, titleOf(sources.map { it.name }), target.name, sources.sumOf { it.size })
         scope.launch {
             locks.acquire()
             try {
-                val result = node.sendFiles(target.fingerprint, sources, purpose)
-                if (purpose == TransferPurpose.TRANSFER_PURPOSE_FILE) {
-                    val id = "send-${sources.hashCode()}"
-                    when (result) {
-                        is TransferResult.Completed -> notifications.finished(id, "Sent to ${target.name}", "${sources.size} file(s)")
-                        is TransferResult.Failed -> notifications.finished(id, "Not sent", result.reason)
-                        TransferResult.Cancelled -> Unit
-                    }
-                }
+                val result = node.sendFiles(target.fingerprint, sources, purpose, id)
+                if (isFile) onSendFinished(id, target, sources, result)
             } catch (e: Exception) {
+                if (isFile) onSendFinished(id, target, sources, TransferResult.Failed(e.message ?: "send failed"))
                 refreshStatus("Send failed: ${e.message}")
             } finally {
                 locks.release()
@@ -281,10 +332,65 @@ class SyncEngine(context: Context) : Closeable {
         }
     }
 
+    private class WaitingSend(val sources: List<FileSource>, val target: String?, val atMs: Long)
+
+    private val waitingSends = ArrayList<WaitingSend>()
+
+    private fun flushWaitingSends() {
+        val now = SystemClock.elapsedRealtime()
+        val ready = synchronized(waitingSends) { waitingSends.toList().also { waitingSends.clear() } }
+        for (w in ready) {
+            if (now - w.atMs <= WAITING_SEND_MS) sendToPcs(w.sources, TransferPurpose.TRANSFER_PURPOSE_FILE, w.target)
+            else EventLog.add("Gave up sending ${w.sources.size} file(s): PC didn't connect")
+        }
+    }
+
+    private fun onSendFinished(id: String, target: PairedDevice, sources: List<FileSource>, result: TransferResult) {
+        transfers.finish(id)
+        lastProgressUi.remove(id)
+        val status = when (result) {
+            is TransferResult.Completed -> RecordStatus.DONE
+            is TransferResult.Failed -> RecordStatus.FAILED
+            TransferResult.Cancelled -> RecordStatus.CANCELLED
+        }
+        val now = System.currentTimeMillis()
+        history.add(
+            sources.mapIndexed { i, src ->
+                TransferRecord(
+                    "$id-$i", Direction.SENT, src.name, src.mime, src.size, target.name, now, status,
+                    (src as? UriFileSource)?.uri?.toString().orEmpty(),
+                )
+            },
+        )
+        if (status == RecordStatus.DONE) history.recordFiles(Direction.SENT, sources.size, sources.sumOf { it.size })
+        EventLog.add("Send ${sources.size} file(s) to ${target.name}: $status")
+        when (result) {
+            is TransferResult.Completed -> notifications.finished(id, "Sent to ${target.name}", titleOf(sources.map { it.name }))
+            is TransferResult.Failed -> notifications.finished(id, "Not sent", result.reason)
+            TransferResult.Cancelled -> notifications.cancel(id)
+        }
+    }
+
+    private fun receivedRecords(id: String, offer: TransferOffer, from: PairedDevice, locations: List<String>): List<TransferRecord> {
+        val now = System.currentTimeMillis()
+        return offer.files.zip(locations).mapIndexed { i, (f, location) ->
+            // MediaStore may have renamed it ("photo (1).jpg") to avoid a clash.
+            val name = runCatching { MediaStoreFileSink.displayName(app, Uri.parse(location)) }.getOrNull() ?: f.name
+            TransferRecord("$id-$i", Direction.RECEIVED, name, f.mime, f.size, from.name, now, RecordStatus.DONE, location)
+        }
+    }
+
+    private fun titleOf(names: List<String>): String = if (names.size == 1) names[0] else "${names.size} files"
+
+    private fun applyToClipboard(content: ClipContent) {
+        val imageUri = clipboard.write(content)
+        if (imageUri != null) notifications.clipImage(imageUri)
+    }
+
     private fun applyClipboardFile(path: String) {
         scope.launch(Dispatchers.IO) {
             val file = File(path)
-            runCatching { clipboard.write(ClipContent.Image(file.readBytes())) }
+            runCatching { applyToClipboard(ClipContent.Image(file.readBytes())) }
             file.delete()
         }
     }
@@ -314,12 +420,14 @@ class SyncEngine(context: Context) : Closeable {
         clipSync.close()
         node.close()
         locks.releaseAll()
+        history.saveNow()
         scope.cancel()
     }
 
     companion object {
         private const val MAX_CLIP_TRANSFER_BYTES = 64L * 1024 * 1024
         private const val PROGRESS_UI_MS = 500L
+        private const val WAITING_SEND_MS = 2 * 60_000L
 
         /** The live engine while [SyncService] runs. Activities only reach it through here. */
         @Volatile

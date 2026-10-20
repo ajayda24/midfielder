@@ -451,12 +451,13 @@ public sealed class MidfielderNode : IAsyncDisposable
     /// from the last received byte when the peer reconnects within the resume window.
     /// </summary>
     public async Task<TransferResult> SendFilesAsync(Fingerprint peer, IReadOnlyList<IFileSource> sources,
-        TransferPurpose purpose = TransferPurpose.File, CancellationToken ct = default)
+        TransferPurpose purpose = TransferPurpose.File, string? transferId = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(sources);
+        if (transferId is not null && !Hex.IsLowerHex(transferId, Limits.TransferIdHexChars)) throw new ArgumentException("bad transfer id", nameof(transferId));
         if (sources.Count is < 1 or > Limits.MaxFilesPerOffer) throw new ArgumentException($"1..{Limits.MaxFilesPerOffer} files");
         var session = Session(peer) ?? throw new NotConnectedException("peer not connected");
-        string id = Hex.Encode(RandomNumberGenerator.GetBytes(Limits.TransferIdHexChars / 2));
+        string id = transferId ?? NewTransferId();
         var offer = new TransferOffer { TransferId = id, Purpose = purpose };
         foreach (var s in sources)
         {
@@ -508,7 +509,7 @@ public sealed class MidfielderNode : IAsyncDisposable
                         if (t.IsDone(i)) continue;
                         int index = i;
                         await RunDataAsDialerAsync(session, t.Id, index, (net, c) =>
-                            TransferEngine.SendAsync(net, t.Sources[index], t.Offer.Files[index], ProgressFor(t.Id), _config.DataStallTimeoutMs, c), ct).ConfigureAwait(false);
+                            TransferEngine.SendAsync(net, t.Sources[index], t.Offer.Files[index], ProgressFor(t.Id, t.Offer, index), _config.DataStallTimeoutMs, c), ct).ConfigureAwait(false);
                         t.MarkDone(index);
                     }
                     t.Result.TrySetResult(new TransferResult.Completed([]));
@@ -632,7 +633,7 @@ public sealed class MidfielderNode : IAsyncDisposable
                     int index = i;
                     await RunDataAsDialerAsync(session, t.Id, index, async (net, c) =>
                     {
-                        string location = await TransferEngine.ReceiveAsync(net, t.Sinks[index], t.Offer.Files[index], ProgressFor(t.Id), _config.DataStallTimeoutMs, c).ConfigureAwait(false);
+                        string location = await TransferEngine.ReceiveAsync(net, t.Sinks[index], t.Offer.Files[index], ProgressFor(t.Id, t.Offer, index), _config.DataStallTimeoutMs, c).ConfigureAwait(false);
                         t.MarkDone(index, location);
                     }, _cts.Token).ConfigureAwait(false);
                 }
@@ -689,7 +690,7 @@ public sealed class MidfielderNode : IAsyncDisposable
         if (_outgoing.TryGetValue(open.TransferId, out var o) && o.Peer == peerFp)
         {
             if (index < 0 || index >= o.Sources.Count) throw new ProtocolException("bad file index");
-            await TransferEngine.SendAsync(net, o.Sources[index], o.Offer.Files[index], ProgressFor(o.Id), _config.DataStallTimeoutMs, ct).ConfigureAwait(false);
+            await TransferEngine.SendAsync(net, o.Sources[index], o.Offer.Files[index], ProgressFor(o.Id, o.Offer, index), _config.DataStallTimeoutMs, ct).ConfigureAwait(false);
             if (o.MarkDone(index)) o.Result.TrySetResult(new TransferResult.Completed([]));
             return;
         }
@@ -697,7 +698,7 @@ public sealed class MidfielderNode : IAsyncDisposable
         {
             if (index < 0 || index >= inc.Sinks.Count) throw new ProtocolException("bad file index");
             Interlocked.Exchange(ref inc.TouchedAt, _config.Clock());
-            string location = await TransferEngine.ReceiveAsync(net, inc.Sinks[index], inc.Offer.Files[index], ProgressFor(inc.Id), _config.DataStallTimeoutMs, ct).ConfigureAwait(false);
+            string location = await TransferEngine.ReceiveAsync(net, inc.Sinks[index], inc.Offer.Files[index], ProgressFor(inc.Id, inc.Offer, index), _config.DataStallTimeoutMs, ct).ConfigureAwait(false);
             if (inc.MarkDone(index, location)) FinishIncoming(inc, null);
             return;
         }
@@ -766,7 +767,21 @@ public sealed class MidfielderNode : IAsyncDisposable
         _events.OnTransferFinished(t.Id, t.From, new TransferResult.Cancelled());
     }
 
-    private TransferEngine.Progress ProgressFor(string id) => (done, total) => _events.OnTransferProgress(id, done, total);
+    /// <summary>Reports progress across the whole transfer, not per file: bytes of earlier files count as done.</summary>
+    private TransferEngine.Progress ProgressFor(string id, TransferOffer offer, int index)
+    {
+        long before = 0, all = 0;
+        for (int i = 0; i < offer.Files.Count; i++)
+        {
+            long size = checked((long)offer.Files[i].Size);
+            all = checked(all + size);
+            if (i < index) before = checked(before + size);
+        }
+        return (done, _) => _events.OnTransferProgress(id, before + done, all);
+    }
+
+    /// <summary>A fresh transfer id, for callers that want to track a send before it starts.</summary>
+    public static string NewTransferId() => Hex.Encode(RandomNumberGenerator.GetBytes(Limits.TransferIdHexChars / 2));
 
     // ---------------------------------------------------------------------------------------------
 

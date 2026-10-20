@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="launcher_background">#FF1F6F5C</color>
+    <!-- Keep in sync with ui/Palette.kt -->
+    <color name="primary">#FF1F6F5C</color>
+    <color name="primary_dark">#FF174F42</color>
+    <color name="highlight">#FFE6F4EE</color>
+    <color name="background">#FFF5F8F6</color>
+    <color name="surface">#FFFFFFFF</color>
+    <color name="text">#FF1B2421</color>
+    <color name="muted">#FF5E6B66</color>
 </resources>

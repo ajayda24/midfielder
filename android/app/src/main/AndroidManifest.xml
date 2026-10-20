@@ -27,7 +27,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight"
+        android:theme="@style/Theme.Midfielder"
         tools:targetApi="35">
 
         <activity
@@ -45,6 +45,9 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="midfielder" android:host="pair" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <activity
@@ -120,6 +123,11 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- "Save to gallery" on the image-from-PC notification. -->
+        <receiver
+            android:name=".SaveImageReceiver"
+            android:exported="false" />
 
         <!-- Serves images we put on the clipboard (content URIs, read access granted per clip). -->
         <provider

@@ -56,21 +56,27 @@ class MediaStoreFileSink(context: Context, private val key: String, private val 
         val u = uri(false) ?: throw java.io.IOException("nothing to commit")
         resolver.update(u, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
         pending.remove(key)
-        return "Download/Midfielder/$displayName"
+        return u.toString()
     }
 
     override fun discard() {
         pending.remove(key)?.let { runCatching { resolver.delete(it, null, null) } }
     }
 
-    private companion object {
+    companion object {
         /** Partial entries by transfer key, so a resumed attempt finds the same file. */
-        val pending = ConcurrentHashMap<String, Uri>()
+        private val pending = ConcurrentHashMap<String, Uri>()
+
+        /** The name MediaStore actually gave the file, or null if it is gone. */
+        fun displayName(context: Context, uri: Uri): String? =
+            context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
     }
 }
 
 /** Sends a content:// or file:// URI (from the share sheet or a picker). */
-class UriFileSource(context: Context, private val uri: Uri) : FileSource {
+class UriFileSource(context: Context, val uri: Uri) : FileSource {
     private val resolver = context.applicationContext.contentResolver
     override val name: String
     override val size: Long

@@ -31,7 +31,7 @@ class SyncService : Service() {
         if (intent?.action == ACTION_SEND_URIS) {
             // URIs arrive with a read grant attached to this intent, which lasts while the service runs.
             val uris = intent.clipData?.let { clip -> (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri } }.orEmpty()
-            engine?.sendUris(uris)
+            engine?.sendUris(uris, intent.getStringExtra(EXTRA_TARGET))
         }
         return START_STICKY
     }
@@ -47,16 +47,19 @@ class SyncService : Service() {
 
     companion object {
         private const val ACTION_SEND_URIS = "dev.midfielder.SEND_URIS"
+        private const val EXTRA_TARGET = "target"
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, SyncService::class.java))
         }
 
-        fun sendUris(context: Context, uris: List<Uri>) {
+        /** [target] is a Direct Share shortcut id naming the PC; null means the connected one. */
+        fun sendUris(context: Context, uris: List<Uri>, target: String? = null) {
             if (uris.isEmpty()) return
             val clip = ClipData.newRawUri("files", uris[0]).apply { for (u in uris.drop(1)) addItem(ClipData.Item(u)) }
             val intent = Intent(context, SyncService::class.java).setAction(ACTION_SEND_URIS).apply {
                 clipData = clip
+                putExtra(EXTRA_TARGET, target)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startForegroundService(intent)

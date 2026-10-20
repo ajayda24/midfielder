@@ -25,6 +25,19 @@ for i in 1 2 3; do
 done
 sleep 5
 
+echo "== Visiting every tab (screenshots for review), three rounds"
+API=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
+mkdir -p screens
+for round in 1 2 3; do
+  for tab in home files settings developer; do
+    adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab "$tab" > /dev/null
+    sleep 3
+    if [ "$round" = 1 ]; then adb exec-out screencap -p > "screens/android-$API-$tab.png"; fi
+  done
+  echo "-- after round $round"
+  adb shell dumpsys meminfo dev.midfielder | grep -E "TOTAL PSS|TOTAL:|Views:|Activities:" | head -4
+done
+
 echo "== Crash buffer"
 adb logcat -d -b crash > crash.txt
 cat crash.txt

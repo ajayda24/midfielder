@@ -3,25 +3,31 @@ package dev.midfielder.android
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ClipData
-import android.content.ClipboardManager
+import android.app.RecoverableSecurityException
 import android.content.Intent
+import android.content.IntentSender
 import android.content.pm.PackageManager
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
+import android.view.ViewGroup
+import android.view.WindowInsets
+import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Switch
-import android.widget.TextView
 import android.widget.Toast
+import dev.midfielder.android.ui.DeveloperTab
+import dev.midfielder.android.ui.FilesTab
+import dev.midfielder.android.ui.HomeTab
+import dev.midfielder.android.ui.Palette
+import dev.midfielder.android.ui.SettingsTab
+import dev.midfielder.android.ui.Tab
+import dev.midfielder.android.ui.Ui
 import dev.midfielder.core.crypto.PairingInvite
+import dev.midfielder.core.history.TransferRecord
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -29,60 +35,60 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Status, pairing and the one-time setup checklist. Plain framework views: the screen is shown rarely and
- * costs nothing when closed (its scope is cancelled in onDestroy).
+ * The app's only regular screen: four tabs (Home, Files, Settings, Developer) over a bottom bar. Framework views
+ * only. A tab's view and its coroutines exist only while it's shown and the activity is resumed.
  */
 class MainActivity : Activity() {
-    private val ui = MainScope()
-    private var statusJob: Job? = null
-    private lateinit var status: TextView
-    private lateinit var capture: TextView
-    private lateinit var checklist: LinearLayout
-    private lateinit var activity: TextView
-    private var activityJob: Job? = null
+    lateinit var ui: Ui
+        private set
+
+    private val scope = MainScope()
+    private var tabJob: Job? = null
+    private var tab: Tab? = null
+    private var tabName = TAB_HOME
+    private var resumed = false
+    private lateinit var content: FrameLayout
+    private lateinit var nav: LinearLayout
+    private val pendingDelete = ArrayList<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ui = Ui(this)
         SyncService.start(this)
-        setContentView(buildUi())
-        handleDeepLink(intent)
+        setContentView(buildFrame())
+        showTab(savedInstanceState?.getString(STATE_TAB) ?: intent.getStringExtra(EXTRA_TAB) ?: TAB_HOME)
+        handleIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleDeepLink(intent)
+        intent.getStringExtra(EXTRA_TAB)?.let(::showTab)
+        handleIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(STATE_TAB, tabName)
     }
 
     override fun onResume() {
         super.onResume()
-        SyncEngine.current?.onUiResumed()
-        refreshChecklist()
-        activityJob?.cancel()
-        activityJob = ui.launch {
-            EventLog.lines.collect { lines ->
-                activity.text = lines.take(15).joinToString("\n").ifEmpty { "Nothing yet" }
-                SyncEngine.current?.let { capture.text = "Phone → PC clipboard: ${it.captureMode}" }
-            }
-        }
-        statusJob?.cancel()
-        statusJob = ui.launch {
+        resumed = true
+        scope.launch {
             var engine = SyncEngine.current
             while (engine == null) {
                 delay(100)
                 engine = SyncEngine.current
             }
             engine.onUiResumed()
-            engine.status.collect {
-                status.text = engine.statusText()
-                capture.text = "Phone → PC clipboard: ${engine.captureMode}"
-            }
         }
+        startTab()
     }
 
     override fun onPause() {
+        resumed = false
         SyncEngine.current?.uiInForeground = false
-        statusJob?.cancel()
-        activityJob?.cancel()
+        stopTab()
         super.onPause()
     }
 
@@ -93,122 +99,191 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        ui.cancel()
+        stopTab()
+        scope.cancel()
         super.onDestroy()
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Frame and tabs
 
-    private fun buildUi(): View {
+    private fun buildFrame(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(24))
+            setBackgroundColor(Palette.BACKGROUND)
         }
-        root.addView(text("Midfielder", 28f, bold = true))
-        status = text("Starting…", 16f).also { root.addView(it) }
-        capture = text("", 13f).also { root.addView(it) }
-
-        root.addView(section("Pair & send"))
-        root.addView(button("Pair with PC (scan QR code)") { startScan() })
-        root.addView(button("Send clipboard to PC now") {
-            val engine = SyncEngine.current
-            val content = runCatching { ClipboardBridge(this).read() }
-                .onFailure { EventLog.error("Reading the clipboard failed", it) }
-                .getOrNull()
-            when {
-                engine == null -> toast("Midfielder is still starting, try again")
-                content == null -> toast("The clipboard is empty, or Android didn't let Midfielder read it").also {
-                    EventLog.add("Manual send: clipboard empty or unreadable")
-                }
-                else -> toast(engine.onLocalClipboard(content, force = true))
+        content = FrameLayout(this)
+        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Palette.SURFACE)
+            elevation = ui.dpf(8f)
+        }
+        root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // Android 15+ draws edge to edge: keep content clear of the status bar and the bar clear of gestures.
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            val (top, bottom) = if (Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.systemBars()).let { it.top to it.bottom }
+            } else {
+                @Suppress("DEPRECATION")
+                insets.systemWindowInsetTop to insets.systemWindowInsetBottom
             }
-        })
-        root.addView(button("Send files to PC…") {
-            startActivityForResult(
-                Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
-                    .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
-                REQ_PICK_FILES,
-            )
-        })
-
-        root.addView(section("Make it automatic (one-time setup)"))
-        checklist = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(checklist)
-
-        root.addView(section("Recent activity"))
-        activity = text("", 12f).also { root.addView(it) }
-
-        root.addView(section("Settings"))
-        val storage = AppStorage(this)
-        root.addView(switch("Sync clipboard", storage.syncClipboard) { on ->
-            storage.syncClipboard = on
-            SyncEngine.current?.clipSync?.enabled = on
-        })
-        root.addView(switch("Receive files from PC automatically", storage.acceptFiles) { storage.acceptFiles = it })
-        root.addView(button("Forget paired PC") {
-            AlertDialog.Builder(this).setMessage("Forget all paired PCs? You will need to scan a new code.")
-                .setPositiveButton("Forget") { _, _ -> SyncEngine.current?.unpairAll() }
-                .setNegativeButton("Cancel", null).show()
-        })
-        return ScrollView(this).apply { addView(root) }
+            v.setPadding(0, top, 0, 0)
+            nav.setPadding(0, ui.dp(6), 0, ui.dp(6) + bottom)
+            insets
+        }
+        return root
     }
 
-    private fun refreshChecklist() {
-        if (!::checklist.isInitialized) return
-        checklist.removeAllViews()
-        val power = getSystemService(PowerManager::class.java)
-        if (Build.VERSION.SDK_INT >= 33) {
-            val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-            checklist.addView(step("Show transfer notifications", granted) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
-            })
-        }
-        checklist.addView(step("Stay connected in the background (no battery limits)", power.isIgnoringBatteryOptimizations(packageName)) {
-            @Suppress("BatteryLife")
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        })
-        checklist.addView(step("Allow \"Display over other apps\" (needed to send copies automatically)", Settings.canDrawOverlays(this)) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        })
-        val readLogs = checkSelfPermission(Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
-        if (readLogs && SyncEngine.current?.logDetectionActive != true) {
-            // Granted over ADB, but Android 13+ also wants a tap on "Allow" each time detection starts.
-            checklist.addView(step("Approve log access: tap \"Allow one-time access\" when Android asks", false, actionLabel = "Ask") {
-                SyncEngine.current?.onUiResumed()
-                checklist.postDelayed({ refreshChecklist() }, 4_000)
-            })
-        }
-        checklist.addView(step("Detect copies silently (one-time ADB command, recommended)", readLogs) {
-            val cmd = "adb shell pm grant $packageName android.permission.READ_LOGS"
-            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("adb", cmd))
-            AlertDialog.Builder(this).setTitle("One-time setup from your PC")
-                .setMessage(
-                    "Enable USB debugging, connect the phone, and run:\n\n$cmd\n\n" +
-                        "(Copied to your clipboard.) Then force-stop and reopen Midfielder.\n\n" +
-                        "No PC handy? Use the accessibility option below instead.",
+    private fun renderNav() {
+        nav.removeAllViews()
+        for ((name, label, icon) in TABS) {
+            val selected = name == tabName
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(0, ui.dp(4), 0, ui.dp(4))
+                background = ui.pressable(null, 16)
+                contentDescription = label
+                setOnClickListener { showTab(name) }
+            }
+            val pill = FrameLayout(this).apply {
+                if (selected) background = ui.rounded(Palette.HIGHLIGHT_STRONG, 16)
+                addView(
+                    ui.icon(icon, if (selected) Palette.PRIMARY_DARK else Palette.MUTED, 22),
+                    FrameLayout.LayoutParams(ui.dp(22), ui.dp(22), Gravity.CENTER),
                 )
-                .setPositiveButton("OK", null).show()
-        })
-        checklist.addView(step("…or detect copies with accessibility", false, actionLabel = "Open") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        })
-        checklist.addView(text("Tip: add the \"Send clipboard\" tile to Quick Settings for a one-tap fallback.", 13f))
+            }
+            item.addView(pill, LinearLayout.LayoutParams(ui.dp(60), ui.dp(32)))
+            item.addView(
+                ui.text(label, 12f, if (selected) Palette.PRIMARY_DARK else Palette.MUTED, bold = selected).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(0, ui.dp(4), 0, 0)
+                },
+            )
+            nav.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+    }
+
+    fun showTab(name: String) {
+        if (TABS.none { it.first == name }) return
+        if (name == tabName && tab != null) return
+        stopTab()
+        tabName = name
+        tab = when (name) {
+            TAB_FILES -> FilesTab(this)
+            TAB_SETTINGS -> SettingsTab(this)
+            TAB_DEVELOPER -> DeveloperTab(this)
+            else -> HomeTab(this)
+        }
+        content.removeAllViews()
+        content.addView(tab!!.build(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        renderNav()
+        if (resumed) startTab()
+    }
+
+    private fun startTab() {
+        val t = tab ?: return
+        if (tabJob != null) return
+        val job = Job(scope.coroutineContext[Job])
+        tabJob = job
+        t.start(CoroutineScope(scope.coroutineContext + job))
+    }
+
+    private fun stopTab() {
+        tabJob?.cancel()
+        tabJob = null
+        tab?.stop()
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Pairing
+    // Actions used by the tabs
 
-    private fun startScan() {
+    fun sendClipboardNow() {
+        val engine = SyncEngine.current
+        val content = runCatching { ClipboardBridge(this).read() }
+            .onFailure { EventLog.error("Reading the clipboard failed", it) }
+            .getOrNull()
+        when {
+            engine == null -> toast("Midfielder is still starting, try again")
+            content == null -> toast("The clipboard is empty, or Android didn't let Midfielder read it").also {
+                EventLog.add("Manual send: clipboard empty or unreadable")
+            }
+            else -> toast(engine.onLocalClipboard(content, force = true))
+        }
+    }
+
+    fun pickFiles() {
+        @Suppress("DEPRECATION")
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
+            REQ_PICK_FILES,
+        )
+    }
+
+    fun startScan() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
             return
         }
+        @Suppress("DEPRECATION")
         startActivityForResult(Intent(this, ScanActivity::class.java), REQ_SCAN)
     }
 
-    private fun handleDeepLink(intent: Intent?) {
-        val data = intent?.data ?: return
-        if (data.scheme == "midfielder" && data.host == "pair") confirmPairing(data.toString())
+    fun confirm(title: String, message: String, positive: String, action: () -> Unit) {
+        AlertDialog.Builder(this).setTitle(title).setMessage(message)
+            .setPositiveButton(positive) { _, _ -> action() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Deletes received files from MediaStore. Files we no longer own (e.g. after a reinstall) need the user's OK. */
+    fun deleteReceived(records: List<TransferRecord>) {
+        val store = HistoryStore.get(this)
+        val done = ArrayList<String>()
+        val needConsent = ArrayList<Pair<String, Uri>>()
+        var recoverable: RecoverableSecurityException? = null
+        for (r in records) {
+            val uri = FileActions.uriOf(r) ?: continue
+            try {
+                contentResolver.delete(uri, null, null)
+                done += r.id
+            } catch (e: SecurityException) {
+                needConsent += r.id to uri
+                if (e is RecoverableSecurityException) recoverable = e
+            }
+        }
+        store.remove(done)
+        if (needConsent.isEmpty()) {
+            toast(if (done.size == 1) "Deleted" else "Deleted ${done.size} files")
+            return
+        }
+        pendingDelete.clear()
+        pendingDelete += needConsent.map { it.first }
+        val sender: IntentSender? = if (Build.VERSION.SDK_INT >= 30) {
+            MediaStore.createDeleteRequest(contentResolver, needConsent.map { it.second }).intentSender
+        } else {
+            recoverable?.userAction?.actionIntent?.intentSender
+        }
+        if (sender == null) return toast("Android didn't allow deleting this file")
+        runCatching {
+            @Suppress("DEPRECATION")
+            startIntentSenderForResult(sender, REQ_DELETE, null, 0, 0, 0)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Pairing and intents
+
+    private fun handleIntent(intent: Intent?) {
+        intent ?: return
+        val data = intent.data
+        if (data != null && data.scheme == "midfielder" && data.host == "pair") confirmPairing(data.toString())
+        intent.getStringExtra(EXTRA_OPEN_RECORD)?.let { id ->
+            intent.removeExtra(EXTRA_OPEN_RECORD)
+            HistoryStore.get(this).records().firstOrNull { it.id == id }?.let { FileActions.open(this, it) }
+        }
     }
 
     private fun confirmPairing(uri: String) {
@@ -225,7 +300,7 @@ class MainActivity : Activity() {
     }
 
     private fun pair(invite: PairingInvite) {
-        ui.launch {
+        scope.launch {
             var engine = SyncEngine.current
             while (engine == null) {
                 delay(100)
@@ -241,6 +316,14 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_DELETE) {
+            if (resultCode == RESULT_OK) {
+                HistoryStore.get(this).remove(pendingDelete.toList())
+                toast("Deleted")
+            }
+            pendingDelete.clear()
+            return
+        }
         if (resultCode != RESULT_OK || data == null) return
         when (requestCode) {
             REQ_SCAN -> data.getStringExtra(ScanActivity.EXTRA_URI)?.let(::confirmPairing)
@@ -248,7 +331,7 @@ class MainActivity : Activity() {
                 val clip = data.clipData
                 val uris = if (clip != null) (0 until clip.itemCount).map { clip.getItemAt(it).uri } else listOfNotNull(data.data)
                 SyncService.sendUris(this, uris)
-                toast("Sending ${uris.size} file(s)")
+                toast(if (uris.size == 1) "Sending file" else "Sending ${uris.size} files")
             }
         }
     }
@@ -256,50 +339,30 @@ class MainActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_CAMERA && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startScan()
-        refreshChecklist()
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Tiny view helpers
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun text(s: String, size: Float, bold: Boolean = false) = TextView(this).apply {
-        text = s
-        textSize = size
-        if (bold) setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, dp(4), 0, dp(4))
-    }
-
-    private fun section(title: String) = text(title, 18f, bold = true).apply { setPadding(0, dp(20), 0, dp(6)) }
-
-    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        isAllCaps = false
-        setOnClickListener { onClick() }
-    }
-
-    @Suppress("UseSwitchCompatOrMaterialCode")
-    private fun switch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) = Switch(this).apply {
-        text = label
-        isChecked = checked
-        setPadding(0, dp(8), 0, dp(8))
-        setOnCheckedChangeListener { _, on -> onChange(on) }
-    }
-
-    private fun step(label: String, done: Boolean, actionLabel: String = "Fix", onFix: () -> Unit) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(text((if (done) "✓  " else "•  ") + label, 15f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        if (!done) addView(button(actionLabel, onFix))
+        (tab as? SettingsTab)?.renderChecklist()
+        (tab as? HomeTab)?.refreshSetup()
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
 
-    private companion object {
-        const val REQ_SCAN = 1
-        const val REQ_PICK_FILES = 2
-        const val REQ_CAMERA = 3
-        const val REQ_NOTIFICATIONS = 4
+    companion object {
+        const val EXTRA_TAB = "tab"
+        const val EXTRA_OPEN_RECORD = "open_record"
+        const val TAB_HOME = "home"
+        const val TAB_FILES = "files"
+        const val TAB_SETTINGS = "settings"
+        const val TAB_DEVELOPER = "developer"
+
+        private val TABS = listOf(
+            Triple(TAB_HOME, "Home", R.drawable.ic_home),
+            Triple(TAB_FILES, "Files", R.drawable.ic_folder),
+            Triple(TAB_SETTINGS, "Settings", R.drawable.ic_settings),
+            Triple(TAB_DEVELOPER, "Developer", R.drawable.ic_code),
+        )
+        private const val STATE_TAB = "tab"
+        private const val REQ_SCAN = 1
+        private const val REQ_PICK_FILES = 2
+        private const val REQ_CAMERA = 3
+        private const val REQ_DELETE = 5
     }
 }

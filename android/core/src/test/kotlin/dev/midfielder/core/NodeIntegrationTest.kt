@@ -55,6 +55,11 @@ class NodeIntegrationTest {
         val finished = Channel<TransferResult>(Channel.UNLIMITED)
         val disconnected = Channel<Throwable?>(Channel.UNLIMITED)
         val paired = Channel<PairedDevice>(Channel.UNLIMITED)
+        val progress: MutableList<Triple<String, Long, Long>> = java.util.Collections.synchronizedList(ArrayList())
+
+        override fun onTransferProgress(transferId: String, transferred: Long, total: Long) {
+            progress += Triple(transferId, transferred, total)
+        }
 
         override fun onPaired(device: PairedDevice) {
             paired.trySend(device)
@@ -162,16 +167,28 @@ class NodeIntegrationTest {
 
         val doc = random(700_001)
         val notes = "notes".toByteArray()
+        val id = pc.node.newTransferId()
         val down = await {
             pc.node.sendFiles(
                 phone.node.fingerprint,
                 listOf(BytesFileSource("report.pdf", doc, "application/pdf"), BytesFileSource("n.txt", notes, "text/plain")),
+                transferId = id,
             )
         }
         assertTrue(down is TransferResult.Completed, "$down")
         val got = await { phone.events.finished.receive() } as TransferResult.Completed
         assertArrayEquals(doc, Files.readAllBytes(Path.of(got.locations[0])))
         assertArrayEquals(notes, Files.readAllBytes(Path.of(got.locations[1])))
+
+        // Progress covers the whole transfer (both files), under the caller's id, and never goes backwards.
+        val total = (doc.size + notes.size).toLong()
+        for (events in listOf(pc.events.progress, phone.events.progress)) {
+            val mine = synchronized(events) { events.filter { it.first == id } }
+            assertTrue(mine.isNotEmpty())
+            assertTrue(mine.all { it.third == total }, "$mine")
+            assertEquals(total, mine.last().second)
+            assertTrue(mine.zipWithNext().all { (a, b) -> b.second >= a.second })
+        }
     }
 
     @Test

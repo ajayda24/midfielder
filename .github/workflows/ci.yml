@@ -93,6 +93,13 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: bash .github/scripts/android-smoke.sh
+      - name: Screenshots of each tab
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-screens-${{ matrix.api }}
+          path: screens/
+          if-no-files-found: ignore
 
   windows:
     name: Windows app (build + tests on Windows)

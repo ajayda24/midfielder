@@ -1,5 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Light theme: dark green primary, pale green for focus and highlights. -->
+    <style name="Theme.Midfielder" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/primary</item>
+        <item name="android:colorPrimaryDark">@color/background</item>
+        <item name="android:colorAccent">@color/primary</item>
+        <item name="android:colorControlHighlight">#331F6F5C</item>
+        <item name="android:colorControlActivated">@color/primary</item>
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/muted</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:alertDialogTheme">@style/Theme.Midfielder.Dialog</item>
+    </style>
+
+    <style name="Theme.Midfielder.Dialog" parent="@android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:colorAccent">@color/primary</item>
+        <item name="android:colorPrimary">@color/primary</item>
+    </style>
+
     <style name="Theme.Midfielder.Invisible" parent="@android:style/Theme.Translucent.NoTitleBar">
         <item name="android:windowAnimationStyle">@null</item>
         <item name="android:windowNoDisplay">false</item>

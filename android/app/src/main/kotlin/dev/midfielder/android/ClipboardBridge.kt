@@ -43,17 +43,20 @@ class ClipboardBridge(context: Context) {
         return ClipContent.Text(text, sensitive)
     }
 
-    fun write(content: ClipContent) {
+    /** Puts [content] on the clipboard. For an image, returns the content URI it is served from. */
+    fun write(content: ClipContent): Uri? {
         suppressUntil = SystemClock.elapsedRealtime() + SUPPRESS_MS
+        val imageUri = (content as? ClipContent.Image)?.let { ClipImageProvider.store(app, it.png) }
         val clip = when (content) {
             is ClipContent.Text -> ClipData.newPlainText("Midfielder", content.text)
-            is ClipContent.Image -> ClipData.newUri(app.contentResolver, "Midfielder image", ClipImageProvider.store(app, content.png))
+            is ClipContent.Image -> ClipData.newUri(app.contentResolver, "Midfielder image", imageUri)
         }
         if (content.sensitive) {
             // Hides the preview in the system clipboard UI (Android 13+ honors this extra).
             clip.description.extras = PersistableBundle().apply { putBoolean(EXTRA_IS_SENSITIVE, true) }
         }
         clipboard.setPrimaryClip(clip)
+        return imageUri
     }
 
     fun addListener(listener: ClipboardManager.OnPrimaryClipChangedListener) = clipboard.addPrimaryClipChangedListener(listener)

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Direct Share: the paired PC (a dynamic sharing shortcut with this category) appears in the share sheet's top row. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="dev.midfielder.android.ShareActivity">
+        <data android:mimeType="*/*" />
+        <category android:name="dev.midfielder.SHARE_TARGET" />
+    </share-target>
+</shortcuts>
