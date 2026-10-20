@@ -8,7 +8,11 @@ connect on their own.
 |---|---|---|
 | Copied text | ✅ automatic (see [Android setup](#android-one-time-setup)) | ✅ automatic |
 | Copied images / screenshots | ✅ automatic | ✅ automatic |
-| Files | Share → **Send to PC**, or the in-app picker | Right-click → **Send to ▸ Midfielder (phone)**, or the tray menu |
+| Files | Share → your PC at the top of the share sheet (or **Send to PC**), or **Send files** in the app | Right-click → **Send to phone**, drag onto the Midfielder window, or **Send files…** |
+
+Both apps keep a **history of sent and received files** (list or gallery; open, show in folder, delete),
+show **live progress** with cancel, and a small **activity summary** (clips, files and data per day). Logs and
+diagnostics live on a separate **Developer** page.
 
 ## How it works (short version)
 
@@ -76,7 +80,8 @@ anywhere.
 
 ## Status
 
-This is a first milestone. Clipboard (text and images) and file transfer work in both directions. Tests
+Clipboard (text and images) and file transfer work in both directions, with file history, progress and
+stats in both apps. Tests
 cover framing, crypto, pairing, sessions, sync logic and resumable transfers in both languages, plus a test
 where a real Kotlin node talks to a real C# node. Things to validate on real hardware are listed in
 [docs/ANDROID_BACKGROUND.md](docs/ANDROID_BACKGROUND.md#on-device-test-checklist). Planned next: notification

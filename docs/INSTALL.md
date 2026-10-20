@@ -22,8 +22,10 @@ You need: a Windows 10/11 PC and an Android 10+ phone **on the same Wi-Fi networ
      code-signed yet.
    * **Windows Firewall** asks about network access: tick **Private networks** and click **Allow**. Without
      this, the phone can't connect.
-3. A Midfielder icon appears in the tray (bottom right; it may be under the **^** arrow). A window with a
-   **QR code** opens. Keep it open for the next step. (Later: right-click the tray icon → **Pair a phone…**.)
+3. A green Midfielder icon appears in the tray (bottom right; it may be under the **^** arrow), the
+   Midfielder window opens, and so does a window with a **QR code**. Keep the QR window open for the next
+   step. (Later: Midfielder window → **Settings → Pair a phone**.) Click the tray icon any time to open the
+   window again; closing it keeps Midfielder running in the tray.
 
 No .NET or anything else to install: the exe is self-contained.
 
@@ -93,8 +95,10 @@ managers. Set Midfielder to **Unrestricted / No restrictions** and enable **Auto
 | Take a screenshot on the laptop (Win+Shift+S), paste in a chat app on the phone | the image |
 | In File Explorer, right-click a photo → **Copy**, paste in a chat app on the phone | the photo |
 | Copy text on the phone, press Ctrl+V on the laptop | same text, within about a second |
-| On the phone, Share a photo → **Send to PC** | appears in `Downloads\Midfielder` with a notification |
-| On the laptop, right-click a file → **Send to → Midfielder (phone)** | appears in the phone's `Download/Midfielder` |
+| On the phone, Share a photo → tap your **PC's icon** in the top row of the share sheet (or **Send to PC**) | appears in `Downloads\Midfielder` with a notification; click it to open |
+| On the laptop, right-click files → **Send to phone** (Windows 11: **Show more options** first) | appear in the phone's `Download/Midfielder` |
+| Drag files onto the Midfielder window on the laptop | sent to the phone, with a progress bar on both sides |
+| Open the **Files** tab on either device | everything sent and received; switch to the gallery, open, or delete |
 | Swipe down twice on the phone → edit tiles → add **Send clipboard** | a one-tap fallback |
 
 ## Troubleshooting
@@ -116,14 +120,15 @@ managers. Set Midfielder to **Unrestricted / No restrictions** and enable **Auto
   **Pair a phone…** for a fresh code.
 * **Firewall prompt was dismissed**: Windows Security → Firewall & network protection → *Allow an app
   through firewall* → enable Midfielder for **Private**.
-* **Phone → PC copying doesn't arrive**: open Midfielder and check the line *Phone → PC clipboard:*. If it
-  says "Tap Send clipboard", step 4 isn't finished. As a fallback, use the notification button or the
-  Quick Settings tile.
-* **Something doesn't sync — send me the logs**: on the PC, tray → **Open log** (`midfielder.log`). On the
-  phone, the **Recent activity** section at the bottom of the Midfielder screen (a screenshot is fine), or
-  `adb logcat -s Midfielder`. They contain events, kinds and sizes, never what you copied.
-* **Start over**: tray → **Forget paired devices**, and on the phone → **Forget paired PC**, then pair
-  again.
+* **Phone → PC copying doesn't arrive**: open Midfielder → **Home** and check the line *Phone → PC copy:*.
+  If it doesn't say Automatic, **Settings → Automatic copy setup** shows what's missing. As a fallback, use
+  the notification button or the Quick Settings tile.
+* **The PC isn't in the share sheet's top row**: it appears after Midfielder has started once with the PC
+  paired; Android may take a share or two to rank it. **Send to PC** in the app list always works.
+* **Something doesn't sync — send me the logs**: on the PC, Midfielder window → **Developer** → **Copy**
+  (or **Open log file**). On the phone, **Developer** tab → **Share**, or `adb logcat -s Midfielder`. They
+  contain events, kinds and sizes, never what you copied.
+* **Start over**: PC: **Settings → Forget**; phone: **Settings → Forget**; then pair again.
 
 ## Uninstall
 
