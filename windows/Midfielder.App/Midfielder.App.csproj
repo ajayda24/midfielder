@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\midfielder.ico</ApplicationIcon>
     <AssemblyName>Midfielder</AssemblyName>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- Smaller working set and faster idle: no tiered PGO bookkeeping kept around. -->
@@ -23,6 +24,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Midfielder.Core/Midfielder.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\midfielder.ico" LogicalName="midfielder.ico" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Midfielder.App.Tests" />

@@ -3,11 +3,14 @@ using Microsoft.Win32;
 
 namespace Midfielder.App;
 
-/// <summary>Windows shell integration: autostart, the Explorer "Send to" entry, opening folders.</summary>
+/// <summary>Windows shell integration: autostart, Explorer's right-click and "Send to" entries, opening folders.</summary>
 internal static class Shell
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValue = "Midfielder";
+
+    /// <summary>Per-user verb on every file type (HKCU, no admin). Windows 11 lists it under "Show more options".</summary>
+    internal const string ContextMenuKey = @"Software\Classes\*\shell\Midfielder.SendToPhone";
 
     public static string ExePath => Environment.ProcessPath ?? Application.ExecutablePath;
 
@@ -43,6 +46,29 @@ internal static class Shell
             System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
         }
     }
+
+    /// <summary>Adds or removes "Send to phone" in Explorer's right-click menu for files.</summary>
+    public static void SetContextMenu(bool enabled, string? exePath = null)
+    {
+        if (!enabled)
+        {
+            Registry.CurrentUser.DeleteSubKeyTree(ContextMenuKey, throwOnMissingSubKey: false);
+            return;
+        }
+        string exe = exePath ?? ExePath;
+        using var key = Registry.CurrentUser.CreateSubKey(ContextMenuKey);
+        key.SetValue("", "Send to phone");
+        key.SetValue("Icon", $"\"{exe}\",0");
+        // Any number of selected files; each starts a tiny Midfielder.exe that hands its path to the running app.
+        key.SetValue("MultiSelectModel", "Player");
+        using var command = key.CreateSubKey("command");
+        command.SetValue("", $"\"{exe}\" --send \"%1\"");
+    }
+
+    /// <summary>Moves a file to the Recycle Bin (so a mistaken delete can be undone).</summary>
+    public static void Recycle(string path) =>
+        Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(path, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+            Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
 
     public static void OpenFolder(string path)
     {

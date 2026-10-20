@@ -7,6 +7,7 @@ using Midfielder.Core.Clip;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Net;
 using Midfielder.Core.Transfer;
+using Midfielder.App.Ui;
 using Midfielder.Protocol;
 
 namespace Midfielder.App;
@@ -14,9 +15,9 @@ namespace Midfielder.App;
 /// <summary>
 /// The whole Windows app: a tray icon and no windows until you ask for one. Clipboard changes arrive as
 /// window messages, network traffic as async I/O completions; between events the process is idle and runs
-/// under EcoQoS (efficiency mode).
+/// under EcoQoS (efficiency mode). The main window (<see cref="MainForm"/>) exists only while it is open.
 /// </summary>
-internal sealed class TrayContext : ApplicationContext
+internal sealed class TrayContext : ApplicationContext, IAppHost
 {
     private const int ProgressUpdateMs = 500;
 
@@ -40,6 +41,13 @@ internal sealed class TrayContext : ApplicationContext
     private readonly List<string> _pendingSends = [];
     private readonly int _port;
     private PairingForm? _pairingForm;
+    private MainForm? _mainForm;
+    private readonly HistoryStore _history;
+    private readonly TransferTracker _transfers = new();
+    private readonly ConcurrentDictionary<string, (TransferOffer Offer, string From)> _incomingOffers = new(StringComparer.Ordinal);
+    private readonly List<string> _sendBatch = [];
+    private readonly System.Windows.Forms.Timer _sendBatchTimer = new() { Interval = 400 };
+    private Action? _balloonAction;
     private readonly object _applyGate = new();
     private Task _applyChain = Task.CompletedTask;
     private int _activeTransfers;
@@ -57,6 +65,7 @@ internal sealed class TrayContext : ApplicationContext
         _trust = new PersistentTrustStore(_storage);
         _node = new MidfielderNode(_identity, Environment.MachineName, DeviceKind.Windows, _trust, new Events(this));
         _clipSync = new ClipSync(_identity.DeviceId, BroadcastAsync, ApplyRemoteValueTaskAsync) { Enabled = _settings.SyncClipboard };
+        _history = new HistoryStore(Path.Combine(_storage.Root, "history.json"));
 
         try
         {
@@ -78,13 +87,29 @@ internal sealed class TrayContext : ApplicationContext
 
         _tray = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = AppIcon.Tray(SystemInformation.SmallIconSize),
             Text = "Midfielder",
             Visible = true,
             ContextMenuStrip = BuildMenu(),
         };
-        _tray.DoubleClick += (_, _) => ShowPairingIfNoDevices();
+        _tray.MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left) ShowMain();
+        };
+        _tray.BalloonTipClicked += (_, _) =>
+        {
+            var action = _balloonAction;
+            _balloonAction = null;
+            (action ?? (() => ShowMain()))();
+        };
         _node.ConnectedPeersChanged += () => _ui.Post(_ => UpdateStatus(), null);
+        _sendBatchTimer.Tick += (_, _) =>
+        {
+            _sendBatchTimer.Stop();
+            var batch = _sendBatch.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            _sendBatch.Clear();
+            SendFiles(batch);
+        };
 
         _monitor.Changed += (_, _) =>
         {
@@ -103,11 +128,17 @@ internal sealed class TrayContext : ApplicationContext
 
         if (_settings.StartWithWindows) TryRun(() => Shell.SetAutostart(true));
         TryRun(Shell.EnsureSendToShortcut);
+        // Re-registered on each start so the entry follows the exe if it was moved.
+        TryRun(() => Shell.SetContextMenu(_settings.ContextMenu));
         if (args.Contains("--send")) _pendingSends.AddRange(args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)));
 
         UpdateStatus();
         NativeMethods.SetEfficiencyMode(true);
-        if (!args.Contains("--background")) ShowPairingIfNoDevices();
+        if (!args.Contains("--background") && !args.Contains("--send"))
+        {
+            ShowMain();
+            ShowPairingIfNoDevices();
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -116,34 +147,44 @@ internal sealed class TrayContext : ApplicationContext
 
     private ContextMenuStrip BuildMenu()
     {
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip { Renderer = new MenuRenderer() };
         var sync = new ToolStripMenuItem("Sync clipboard") { Checked = _settings.SyncClipboard, CheckOnClick = true };
-        sync.CheckedChanged += (_, _) =>
+        sync.CheckedChanged += (_, _) => SetSyncClipboard(sync.Checked);
+        menu.Opening += (_, _) =>
         {
-            _settings.SyncClipboard = sync.Checked;
-            _clipSync.Enabled = sync.Checked;
-            _storage.SaveSettings(_settings);
+            if (sync.Checked != _settings.SyncClipboard) sync.Checked = _settings.SyncClipboard;
         };
-        var autostart = new ToolStripMenuItem("Start with Windows") { Checked = _settings.StartWithWindows, CheckOnClick = true };
-        autostart.CheckedChanged += (_, _) =>
-        {
-            _settings.StartWithWindows = autostart.Checked;
-            TryRun(() => Shell.SetAutostart(autostart.Checked));
-            _storage.SaveSettings(_settings);
-        };
+        var open = new ToolStripMenuItem("Open Midfielder", null, (_, _) => ShowMain()) { Font = new Font(menu.Font, FontStyle.Bold) };
         menu.Items.Add(_statusItem);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(open);
         menu.Items.Add("Send files to phone…", null, (_, _) => PickAndSendFiles());
-        menu.Items.Add("Open received files", null, (_, _) => Shell.OpenFolder(_settings.ReceiveFolder));
-        menu.Items.Add("Open log", null, (_, _) => Shell.OpenFile(AppLog.Path));
+        menu.Items.Add("Received files", null, (_, _) => ShowMain(Ui.MainForm.FilesName));
         menu.Items.Add(sync);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Pair a phone…", null, (_, _) => ShowPairing());
-        menu.Items.Add("Forget paired devices", null, (_, _) => ForgetDevices());
-        menu.Items.Add(autostart);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
         return menu;
+    }
+
+    /// <summary>Opens (or brings to front) the main window. Closing it disposes it completely.</summary>
+    private void ShowMain(string? page = null)
+    {
+        if (_mainForm is { IsDisposed: false })
+        {
+            if (page is not null) _mainForm.ShowPage(page);
+            if (_mainForm.WindowState == FormWindowState.Minimized) _mainForm.WindowState = FormWindowState.Normal;
+            _mainForm.Activate();
+            return;
+        }
+        _mainForm = new MainForm(this, page ?? Ui.MainForm.HomeName);
+        _mainForm.FormClosed += (_, _) =>
+        {
+            var f = _mainForm;
+            _mainForm = null;
+            f?.Dispose();
+        };
+        _mainForm.Show();
+        _mainForm.Activate();
     }
 
     private void UpdateStatus()
@@ -154,11 +195,16 @@ internal sealed class TrayContext : ApplicationContext
             : _trust.All().Count > 0 ? "Waiting for your phone…" : "Not paired yet";
         _statusItem.Text = status;
         SetTrayText(status);
+        StatusChanged?.Invoke();
     }
 
     private void SetTrayText(string text) => _tray.Text = text.Length > 127 ? text[..127] : text;
 
-    private void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info) => _tray.ShowBalloonTip(3_000, title, text, icon);
+    private void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, Action? onClick = null)
+    {
+        _balloonAction = onClick;
+        _tray.ShowBalloonTip(3_000, title, text, icon);
+    }
 
     // ---------------------------------------------------------------------------------------------
     // Pairing
@@ -182,7 +228,6 @@ internal sealed class TrayContext : ApplicationContext
         {
             _node.ClosePairing();
             _pairingForm?.Dispose();
-            _uiInvoker.Dispose();
             _pairingForm = null;
         };
         _pairingForm.Show();
@@ -238,6 +283,7 @@ internal sealed class TrayContext : ApplicationContext
     {
         int peers = _node.BroadcastClipboard(item);
         AppLog.Info($"Clipboard sent to {peers} device(s)");
+        if (peers > 0) _history.RecordClip(TransferDirection.Sent, DateTime.Now);
         return ValueTask.CompletedTask;
     }
 
@@ -305,10 +351,14 @@ internal sealed class TrayContext : ApplicationContext
     {
         if (lines.Count == 1 && lines[0] == "--show")
         {
+            ShowMain();
             ShowPairingIfNoDevices();
             return;
         }
-        SendFiles(lines.Where(File.Exists).ToList());
+        // Explorer's right-click starts one process per selected file: gather them into a single send.
+        _sendBatch.AddRange(lines.Where(File.Exists));
+        _sendBatchTimer.Stop();
+        _sendBatchTimer.Start();
     }
 
     private void SendFiles(IReadOnlyList<string> paths)
@@ -323,24 +373,78 @@ internal sealed class TrayContext : ApplicationContext
             Notify("Phone not connected", "The files will be sent as soon as your phone connects.");
             return;
         }
+        if (paths.Count > Limits.MaxFilesPerOffer)
+        {
+            // One offer carries a bounded number of files; send the rest in further batches.
+            SendFiles(paths.Take(Limits.MaxFilesPerOffer).ToList());
+            SendFiles(paths.Skip(Limits.MaxFilesPerOffer).ToList());
+            return;
+        }
         List<IFileSource> sources;
         try
         {
-            sources = paths.Take(Limits.MaxFilesPerOffer).Select(p => (IFileSource)new PathFileSource(p)).ToList();
+            sources = paths.Select(p => (IFileSource)new PathFileSource(p)).ToList();
         }
-        catch (IOException e)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             Notify("Can't send", e.Message, ToolTipIcon.Warning);
             return;
         }
+        string id = MidfielderNode.NewTransferId();
+        string title = sources.Count == 1 ? sources[0].Name : $"{sources.Count} files";
+        _transfers.Start(id, TransferDirection.Sent, title, peer.Name, sources.Sum(s => s.Size));
+        AppLog.Info($"Sending {sources.Count} file(s) to {peer.Name}");
         _ = RunTransferAsync(async () =>
         {
-            var result = await _node.SendFilesAsync(peer.Fingerprint, sources).ConfigureAwait(false);
-            _ui.Post(_ => Notify(result is TransferResult.Completed ? "Sent" : "Not sent",
-                result is TransferResult.Completed ? $"{sources.Count} file(s) sent to {peer.Name}" : Describe(result)), null);
+            TransferResult result;
+            try
+            {
+                result = await _node.SendFilesAsync(peer.Fingerprint, sources, TransferPurpose.File, id).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is IOException or InvalidOperationException)
+            {
+                result = new TransferResult.Failed(e.Message);
+            }
+            OnSendFinished(id, peer, paths, sources, result);
             return result;
         });
     }
+
+    private void OnSendFinished(string id, PairedDevice peer, IReadOnlyList<string> paths, IReadOnlyList<IFileSource> sources, TransferResult result)
+    {
+        _transfers.Finish(id);
+        var status = result switch
+        {
+            TransferResult.Completed => TransferStatus.Done,
+            TransferResult.Cancelled => TransferStatus.Cancelled,
+            _ => TransferStatus.Failed,
+        };
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _history.Add(sources.Select((s, i) => new TransferRecord($"{id}-{i}", TransferDirection.Sent, s.Name, MimeOf(s.Name), s.Size, peer.Name, now, status, paths[i])));
+        if (status == TransferStatus.Done) _history.RecordFiles(TransferDirection.Sent, sources.Count, sources.Sum(s => s.Size), DateTime.Now);
+        AppLog.Info($"Send to {peer.Name}: {status}{(result is TransferResult.Failed f ? $" ({f.Reason})" : "")}");
+        _ui.Post(_ =>
+        {
+            if (status == TransferStatus.Done) Notify("Sent", sources.Count == 1 ? $"{sources[0].Name} sent to {peer.Name}" : $"{sources.Count} files sent to {peer.Name}");
+            else if (status == TransferStatus.Failed) Notify("Not sent", Describe(result), ToolTipIcon.Warning, () => ShowMain(Ui.MainForm.FilesName));
+        }, null);
+    }
+
+    private static string MimeOf(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    {
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".png" => "image/png",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        ".heic" => "image/heic",
+        ".bmp" => "image/bmp",
+        ".mp4" => "video/mp4",
+        ".mov" => "video/quicktime",
+        ".pdf" => "application/pdf",
+        ".txt" => "text/plain",
+        ".zip" => "application/zip",
+        _ => "application/octet-stream",
+    };
 
     private async Task<IReadOnlyList<IFileSink>?> DecideOfferAsync(PairedDevice from, TransferOffer offer)
     {
@@ -366,6 +470,9 @@ internal sealed class TrayContext : ApplicationContext
             if (!ok) return null;
         }
         BeginTransfer();
+        _incomingOffers[offer.TransferId] = (offer, from.Name);
+        string title = offer.Files.Count == 1 ? offer.Files[0].Name : $"{offer.Files.Count} files";
+        _transfers.Start(offer.TransferId, TransferDirection.Received, title, from.Name, (long)total);
         return offer.Files.Select((f, i) => (IFileSink)new DirectoryFileSink(_settings.ReceiveFolder, $"{offer.TransferId}-{i}", f.Name)).ToList();
     }
 
@@ -396,15 +503,41 @@ internal sealed class TrayContext : ApplicationContext
             return;
         }
         EndTransfer();
+        _transfers.Finish(transferId);
+        List<TransferRecord> records = [];
+        if (result is TransferResult.Completed completed && _incomingOffers.TryRemove(transferId, out var info))
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            records = completed.Locations.Select((path, i) =>
+            {
+                var f = i < info.Offer.Files.Count ? info.Offer.Files[i] : null;
+                return new TransferRecord($"{transferId}-{i}", TransferDirection.Received, Path.GetFileName(path), f?.Mime ?? MimeOf(path),
+                    f is null ? 0 : (long)f.Size, from.Name, now, TransferStatus.Done, path);
+            }).ToList();
+            _history.Add(records);
+            _history.RecordFiles(TransferDirection.Received, records.Count, records.Sum(r => r.Size), DateTime.Now);
+        }
+        else
+        {
+            _incomingOffers.TryRemove(transferId, out _);
+        }
         _ui.Post(_ =>
         {
             SetTrayText("Midfielder");
             UpdateStatus();
-            if (result is TransferResult.Completed done)
+            if (result is TransferResult.Completed)
             {
-                Notify("Received", $"{done.Locations.Count} file(s) from {from.Name} in {_settings.ReceiveFolder}");
+                if (records.Count == 1)
+                {
+                    string path = records[0].Location;
+                    Notify("Received", $"{records[0].Name} from {from.Name}. Click to open.", onClick: () => Shell.OpenFile(path));
+                }
+                else
+                {
+                    Notify("Received", $"{records.Count} files from {from.Name}. Click to see them.", onClick: () => ShowMain(Ui.MainForm.FilesName));
+                }
             }
-            else
+            else if (result is TransferResult.Failed)
             {
                 Notify("Transfer failed", Describe(result), ToolTipIcon.Warning);
             }
@@ -466,6 +599,99 @@ internal sealed class TrayContext : ApplicationContext
         TransferResult.Cancelled => "Cancelled",
         _ => "Done",
     };
+
+    // ---------------------------------------------------------------------------------------------
+    // IAppHost (the main window)
+    // ---------------------------------------------------------------------------------------------
+
+    public event Action? StatusChanged;
+
+    public HistoryStore History => _history;
+    public TransferTracker Transfers => _transfers;
+    public Settings Settings => _settings;
+    public IReadOnlyList<PairedDevice> PairedDevices => _trust.All();
+    public IReadOnlyList<PairedDevice> ConnectedDevices => _node.ConnectedPeers;
+    public string DeviceId => _identity.DeviceId;
+    public string Fingerprint => _identity.Fingerprint.Display();
+    public int Port => _port;
+    public string StatusText => _statusItem.Text ?? "";
+
+    public string? AddressOf(PairedDevice device) => _peerHosts.TryGetValue(device.Fingerprint, out string? host) ? host : null;
+
+    void IAppHost.PickAndSendFiles() => PickAndSendFiles();
+
+    void IAppHost.SendFiles(IReadOnlyList<string> paths) => SendFiles(paths);
+
+    void IAppHost.ShowPairing() => ShowPairing();
+
+    void IAppHost.ForgetDevices() => ForgetDevices();
+
+    public void CancelTransfer(string id) => _node.CancelTransfer(id);
+
+    /// <summary>"Send clipboard now": resend what's on the clipboard even if it was sent before.</summary>
+    public void SendClipboardNow()
+    {
+        ClipContent? content;
+        try
+        {
+            content = WindowsClipboard.Read();
+        }
+        catch (Exception e) when (e is System.Runtime.InteropServices.ExternalException or ArgumentException or OutOfMemoryException or IOException)
+        {
+            AppLog.Error("Could not read the local clipboard", e);
+            content = null;
+        }
+        if (content is null)
+        {
+            Notify("Nothing to send", "The clipboard is empty or holds something Midfielder can't sync.");
+            return;
+        }
+        if (_node.ConnectedPeers.Count == 0)
+        {
+            KnockPhones();
+            Notify("Phone not connected", "Midfielder will send your latest copy when the phone connects.");
+        }
+        if (!ClipSync.IsInlineSize(content))
+        {
+            if (content is ImageClip big) SendClipboardImage(big);
+            return;
+        }
+        var result = _clipSync.OnLocalChange(content, force: true);
+        AppLog.Info($"Send now: {Describe(content)} -> {result}");
+    }
+
+    public void SetSyncClipboard(bool on)
+    {
+        _settings.SyncClipboard = on;
+        _clipSync.Enabled = on;
+        _storage.SaveSettings(_settings);
+    }
+
+    public void SetAutoAccept(bool on)
+    {
+        _settings.AutoAcceptFiles = on;
+        _storage.SaveSettings(_settings);
+    }
+
+    public void SetStartWithWindows(bool on)
+    {
+        _settings.StartWithWindows = on;
+        TryRun(() => Shell.SetAutostart(on));
+        _storage.SaveSettings(_settings);
+    }
+
+    public void SetContextMenu(bool on)
+    {
+        _settings.ContextMenu = on;
+        TryRun(() => Shell.SetContextMenu(on));
+        _storage.SaveSettings(_settings);
+    }
+
+    public void SetReceiveFolder(string path)
+    {
+        _settings.ReceiveFolder = path;
+        _storage.SaveSettings(_settings);
+    }
 
     // ---------------------------------------------------------------------------------------------
     // Connections & power
@@ -547,6 +773,9 @@ internal sealed class TrayContext : ApplicationContext
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
             _cts.Cancel();
+            _mainForm?.Dispose();
+            _sendBatchTimer.Dispose();
+            _history.Dispose();
             _clipDebounce.Dispose();
             _monitor.Dispose();
             _writer.Dispose();
@@ -606,6 +835,7 @@ internal sealed class TrayContext : ApplicationContext
                     {
                         var result = await app._clipSync.OnRemoteAsync(item).AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                         AppLog.Info($"Clipboard from {from.Name} -> {result}");
+                        if (result == ClipResult.Applied) app._history.RecordClip(TransferDirection.Received, DateTime.Now);
                     }
                     catch (Exception e)
                     {
@@ -621,7 +851,9 @@ internal sealed class TrayContext : ApplicationContext
 
         public void OnTransferProgress(string transferId, long transferred, long total)
         {
-            if (!app._clipboardTransfers.ContainsKey(transferId)) app.OnProgress(transferred, total);
+            if (app._clipboardTransfers.ContainsKey(transferId)) return;
+            app._transfers.Progress(transferId, transferred, total);
+            app.OnProgress(transferred, total);
         }
 
         public void OnTransferFinished(string transferId, PairedDevice from, TransferResult result) => app.OnTransferFinished(transferId, from, result);

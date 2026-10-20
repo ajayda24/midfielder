@@ -16,7 +16,8 @@ internal static class SendToPipe
         try
         {
             using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
-            client.Connect(2_000);
+            // Selecting many files starts many forwarders at once; they queue for the single pipe.
+            client.Connect(10_000);
             using var writer = new StreamWriter(client, Encoding.UTF8);
             foreach (string line in lines) writer.WriteLine(line);
             return true;

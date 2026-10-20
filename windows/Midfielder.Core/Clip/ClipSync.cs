@@ -44,8 +44,11 @@ public sealed class ClipSync : IDisposable
 
     public static bool IsInlineSize(ClipContent content) => content is not null && content.Bytes.Length <= Limits.MaxInlineClipBytes;
 
-    /// <summary>Call from the clipboard monitor. <see cref="ClipResult.Sent"/> means it was queued for every peer.</summary>
-    public ClipResult OnLocalChange(ClipContent content)
+    /// <summary>
+    /// Call from the clipboard monitor. <see cref="ClipResult.Sent"/> means it was queued for every peer.
+    /// <paramref name="force"/> (an explicit "send now") sends even if this content was already sent or applied.
+    /// </summary>
+    public ClipResult OnLocalChange(ClipContent content, bool force = false)
     {
         ArgumentNullException.ThrowIfNull(content);
         if (!Enabled) return ClipResult.Disabled;
@@ -58,11 +61,11 @@ public sealed class ClipSync : IDisposable
         {
             if (_lastAppliedHash is not null)
             {
-                if (CryptographicOperations.FixedTimeEquals(_lastAppliedHash, hash)) return ClipResult.Duplicate; // our own echo
+                if (!force && CryptographicOperations.FixedTimeEquals(_lastAppliedHash, hash)) return ClipResult.Duplicate; // our own echo
                 // The user copied something else since: copying the applied content again later is a real copy.
                 _lastAppliedHash = null;
             }
-            if (_latest is not null && CryptographicOperations.FixedTimeEquals(_latest.ContentSha256.Span, hash)) return ClipResult.Duplicate;
+            if (!force && _latest is not null && CryptographicOperations.FixedTimeEquals(_latest.ContentSha256.Span, hash)) return ClipResult.Duplicate;
             item = ToItem(content);
             _latest = item;
         }

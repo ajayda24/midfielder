@@ -81,6 +81,7 @@ internal sealed class Settings
     public bool SyncClipboard { get; set; } = true;
     public bool AutoAcceptFiles { get; set; } = true;
     public bool StartWithWindows { get; set; } = true;
+    public bool ContextMenu { get; set; } = true;
     public string ReceiveFolder { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Midfielder");
     public int Port { get; set; } = 47810;
