@@ -179,9 +179,11 @@ public sealed partial class MainWindowTests : IDisposable
     {
         var root = (W.FrameworkElement)window.Content;
         window.UpdateLayout();
-        if (root.ActualWidth < 1 || root.ActualHeight < 1)
+        // CI runners have no interactive desktop, so the window may keep a size of its own (or none, or its
+        // content's). Lay the content out at the requested client size so checks and screenshots are real.
+        var size = new W.Size(window.Width, window.Height - 32);
+        if (Math.Abs(root.ActualWidth - size.Width) > 1 || Math.Abs(root.ActualHeight - size.Height) > 1)
         {
-            var size = new W.Size(window.Width, window.Height - 32);
             root.Measure(size);
             root.Arrange(new W.Rect(size));
             root.UpdateLayout();

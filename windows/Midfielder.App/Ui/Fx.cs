@@ -199,14 +199,14 @@ internal static class Fx
     {
         dotShape = new System.Windows.Shapes.Ellipse { Width = 8, Height = 8, Fill = dot, VerticalAlignment = VerticalAlignment.Center };
         label = Text(text, 12.5, FontWeights.SemiBold, PrimaryDark);
-        label.Margin = new Thickness(8, 0, 0, 0);
+        label.VerticalAlignment = VerticalAlignment.Center;
         return new Border
         {
             Background = background,
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(10, 4, 12, 4),
             HorizontalAlignment = HorizontalAlignment.Left,
-            Child = Row(0, dotShape, label),
+            Child = Row(8, dotShape, label),
         };
     }
 

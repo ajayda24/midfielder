@@ -55,6 +55,9 @@ internal sealed class DeveloperPage : PageBase
             BorderThickness = new Thickness(0),
             Background = Fx.Surface,
         };
+        // Long lines are trimmed (full text in the tooltip), so there is never a horizontal scrollbar.
+        ScrollViewer.SetHorizontalScrollBarVisibility(list, ScrollBarVisibility.Disabled);
+        list.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         VirtualizingPanel.SetIsVirtualizing(list, true);
         VirtualizingPanel.SetVirtualizationMode(list, VirtualizationMode.Recycling);
 
