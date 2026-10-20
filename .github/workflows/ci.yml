@@ -104,6 +104,8 @@ jobs:
           dotnet-version: 8.0.x
       - name: Core tests on Windows (SChannel TLS 1.3)
         run: dotnet test windows/Midfielder.Core.Tests -c Release
+      - name: Windows clipboard tests (real clipboard on the runner)
+        run: dotnet test windows/Midfielder.App.Tests -c Release
       - name: Publish tray app (single self-contained Midfielder.exe, no .NET install needed)
         run: >-
           dotnet publish windows/Midfielder.App -c Release -r win-x64 --self-contained true

@@ -24,4 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="../Midfielder.Core/Midfielder.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Midfielder.App.Tests" />
+  </ItemGroup>
 </Project>

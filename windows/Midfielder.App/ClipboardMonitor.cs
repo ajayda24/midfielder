@@ -6,7 +6,8 @@ namespace Midfielder.App;
 /// </summary>
 internal sealed class ClipboardMonitor : NativeWindow, IDisposable
 {
-    private uint _ignoreSequence;
+    private volatile uint _ignoreSequence;
+    private long _suppressUntil;
 
     public ClipboardMonitor()
     {
@@ -21,6 +22,9 @@ internal sealed class ClipboardMonitor : NativeWindow, IDisposable
     /// <summary>Call right after writing the clipboard ourselves so that update is not re-sent.</summary>
     public IntPtr OwnerHandle => Handle;
 
+    /// <summary>Ignore every clipboard change for a moment (while our own write is in progress).</summary>
+    public void SuppressFor(TimeSpan duration) => Interlocked.Exchange(ref _suppressUntil, Environment.TickCount64 + (long)duration.TotalMilliseconds);
+
     public void IgnoreCurrentSequence() => _ignoreSequence = NativeMethods.GetClipboardSequenceNumber();
 
     protected override void WndProc(ref Message m)
@@ -28,7 +32,7 @@ internal sealed class ClipboardMonitor : NativeWindow, IDisposable
         if (m.Msg == NativeMethods.WM_CLIPBOARDUPDATE)
         {
             uint seq = NativeMethods.GetClipboardSequenceNumber();
-            if (seq != _ignoreSequence) Changed?.Invoke(this, EventArgs.Empty);
+            if (seq != _ignoreSequence && Environment.TickCount64 > Interlocked.Read(ref _suppressUntil)) Changed?.Invoke(this, EventArgs.Empty);
             return;
         }
         base.WndProc(ref m);

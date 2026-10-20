@@ -55,6 +55,51 @@ internal static partial class NativeMethods
     [LibraryImport("kernel32.dll", SetLastError = true)]
     public static partial IntPtr GlobalFree(IntPtr hMem);
 
+    // --- Message wait/pump for the clipboard writer thread --------------------------------------
+
+    public const uint INFINITE = 0xFFFFFFFF;
+    public const uint WAIT_OBJECT_0 = 0;
+    public const uint QS_ALLINPUT = 0x04FF;
+    public const uint MWMO_INPUTAVAILABLE = 0x0004;
+    private const uint PM_REMOVE = 0x0001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public int ptX;
+        public int ptY;
+        public uint lPrivate;
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial uint MsgWaitForMultipleObjectsEx(uint nCount, [In] IntPtr[] pHandles, uint dwMilliseconds, uint dwWakeMask, uint dwFlags);
+
+    [LibraryImport("user32.dll", EntryPoint = "PeekMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool TranslateMessage(in MSG lpMsg);
+
+    [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
+    private static partial IntPtr DispatchMessage(in MSG lpMsg);
+
+    /// <summary>Dispatches every message already queued for this thread, then returns.</summary>
+    public static void PumpPendingMessages()
+    {
+        while (PeekMessage(out MSG msg, IntPtr.Zero, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(in msg);
+            DispatchMessage(in msg);
+        }
+    }
+
     // --- EcoQoS ("Efficiency mode") -------------------------------------------------------------
 
     private const int ProcessPowerThrottling = 4;

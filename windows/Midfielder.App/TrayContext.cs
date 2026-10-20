@@ -29,6 +29,7 @@ internal sealed class TrayContext : ApplicationContext
     private readonly MidfielderNode _node;
     private readonly ClipSync _clipSync;
     private readonly ClipboardMonitor _monitor = new();
+    private volatile ClipboardWriter _writer = new();
     private readonly System.Windows.Forms.Timer _clipDebounce = new() { Interval = 60 };
     private readonly NotifyIcon _tray;
     private readonly ToolStripMenuItem _statusItem = new("Starting…") { Enabled = false };
@@ -240,28 +241,34 @@ internal sealed class TrayContext : ApplicationContext
         return ValueTask.CompletedTask;
     }
 
-    private Task ApplyRemoteAsync(ClipContent content, ClipboardItem item)
+    /// <summary>
+    /// Puts a received clip on the Windows clipboard via the dedicated writer thread. Never waits more than 5 s:
+    /// a write that hangs (another program holding the clipboard) is logged, and the writer thread is replaced
+    /// so later clips aren't stuck behind it.
+    /// </summary>
+    private async Task ApplyRemoteAsync(ClipContent content, ClipboardItem item)
     {
-        var applied = OnUiAsync(() => ApplyOnUi(content));
-        // If the UI thread doesn't get to it promptly, say so in the log rather than failing silently.
-        _ = Task.Delay(TimeSpan.FromSeconds(5)).ContinueWith(_ =>
-        {
-            if (!applied.IsCompleted) AppLog.Error("Applying a received clip has not finished after 5 s");
-        }, TaskScheduler.Default);
-        return applied;
-    }
-
-    private void ApplyOnUi(ClipContent content)
-    {
+        _monitor.SuppressFor(TimeSpan.FromMilliseconds(1500));
+        var write = _writer.WriteAsync(content);
         try
         {
-            WindowsClipboard.Write(content, _monitor.OwnerHandle);
+            long ms = await write.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             _monitor.IgnoreCurrentSequence();
-            AppLog.Info($"Applied to Windows clipboard: {Describe(content)}");
+            AppLog.Info($"Applied to Windows clipboard: {Describe(content)} ({ms} ms)");
+        }
+        catch (TimeoutException)
+        {
+            AppLog.Error("Writing the Windows clipboard has not finished after 5 s; another program may be holding it. Starting a fresh writer.");
+            var stuck = _writer;
+            _writer = new ClipboardWriter();
+            _ = write.ContinueWith(t =>
+            {
+                AppLog.Info(t.IsFaulted ? $"Late clipboard write failed: {t.Exception?.GetBaseException().Message}" : "Late clipboard write finished");
+                stuck.Dispose();
+            }, TaskScheduler.Default);
         }
         catch (Exception e)
         {
-            // Never let one clipboard write take anything else down; the next copy will sync.
             AppLog.Error("Writing the Windows clipboard failed", e);
         }
     }
@@ -370,15 +377,15 @@ internal sealed class TrayContext : ApplicationContext
             if (result is TransferResult.Completed { Locations.Count: 1 } done)
             {
                 string path = done.Locations[0];
-                _ = OnUiAsync(() =>
+                _ = Task.Run(async () =>
                 {
                     try
                     {
-                        WindowsClipboard.Write(new ImageClip(File.ReadAllBytes(path)), _monitor.OwnerHandle);
-                        _monitor.IgnoreCurrentSequence();
+                        await ApplyRemoteAsync(new ImageClip(await File.ReadAllBytesAsync(path).ConfigureAwait(false)), new ClipboardItem()).ConfigureAwait(false);
                     }
-                    catch (Exception e) when (e is IOException or ArgumentException or System.Runtime.InteropServices.ExternalException)
+                    catch (IOException e)
                     {
+                        AppLog.Error("Reading a received clipboard image failed", e);
                     }
                     finally
                     {
@@ -542,6 +549,7 @@ internal sealed class TrayContext : ApplicationContext
             _cts.Cancel();
             _clipDebounce.Dispose();
             _monitor.Dispose();
+            _writer.Dispose();
             _clipSync.Dispose();
             _discovery.Dispose();
             _node.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -596,7 +604,7 @@ internal sealed class TrayContext : ApplicationContext
                 {
                     try
                     {
-                        var result = await app._clipSync.OnRemoteAsync(item).ConfigureAwait(false);
+                        var result = await app._clipSync.OnRemoteAsync(item).AsTask().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                         AppLog.Info($"Clipboard from {from.Name} -> {result}");
                     }
                     catch (Exception e)
