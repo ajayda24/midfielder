@@ -140,6 +140,16 @@ jobs:
         run: >-
           dotnet publish windows/Midfielder.App -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish
+      - name: Run the published Midfielder.exe and check its real windows paint (not blank, responding)
+        shell: pwsh
+        run: ./windows/ci/smoke-real-exe.ps1 -Exe publish/Midfielder.exe -Screens real-screens
+      - name: Screenshots of the real exe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-real-screens
+          path: real-screens/
+          if-no-files-found: ignore
       - uses: microsoft/setup-msbuild@v2
       - name: Build the Windows 11 context-menu handler (MidfielderShell.dll)
         run: msbuild windows/Midfielder.Shell/MidfielderShell.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
