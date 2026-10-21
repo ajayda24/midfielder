@@ -36,26 +36,6 @@ public sealed partial class MainWindowTests : IDisposable
         }
     }
 
-    /// <summary>What a first start looks like: nothing paired or sent yet, with real animations running.</summary>
-    [Fact]
-    public void FreshInstallWithAnimationsRenders()
-    {
-        OnSta(() =>
-        {
-            Anim.Disabled = false;
-            try
-            {
-                var problems = new List<string>();
-                RunWindow(new FakeHost(_dir, empty: true), null, [(1100, 740)], problems);
-                Assert.True(problems.Count == 0, string.Join(Environment.NewLine, problems));
-            }
-            finally
-            {
-                Anim.Disabled = true;
-            }
-        });
-    }
-
     [Fact]
     public void EveryPageRendersAndNothingLeaks()
     {
@@ -79,10 +59,24 @@ public sealed partial class MainWindowTests : IDisposable
             Assert.True(gdiAfter - gdi < 40, $"GDI handles grew from {gdi} to {gdiAfter}");
             Assert.True(userAfter - user < 40, $"USER handles grew from {user} to {userAfter}");
             Assert.Empty(W.Application.Current.Windows);
+
+            // What a first start looks like: nothing paired or sent yet, with real animations running.
+            // Same thread: WPF allows one Application per process, owned by the thread that created it.
+            Anim.Disabled = false;
+            try
+            {
+                RunWindow(new FakeHost(_dir, empty: true), screens, [(1100, 740)], problems, "fresh-");
+            }
+            finally
+            {
+                Anim.Disabled = true;
+            }
+            Assert.True(problems.Count == 0, string.Join(Environment.NewLine, problems));
+            Assert.Empty(W.Application.Current.Windows);
         });
     }
 
-    private static void RunWindow(FakeHost host, string? screens, (int W, int H)[] sizes, List<string> problems)
+    private static void RunWindow(FakeHost host, string? screens, (int W, int H)[] sizes, List<string> problems, string prefix = "")
     {
         var window = new MainWindow(host) { WindowStartupLocation = W.WindowStartupLocation.Manual, Left = 0, Top = 0 };
         window.Show();
@@ -94,12 +88,12 @@ public sealed partial class MainWindowTests : IDisposable
             {
                 window.ShowPage(page);
                 Pump(page == MainWindow.FilesName ? 1_200 : 300);
-                Check(window, $"{w}x{h} {page}", problems);
-                Snap(window, screens, $"windows-{w}-{page}.png");
+                Check(window, $"{prefix}{w}x{h} {page}", problems);
+                Snap(window, screens, $"windows-{prefix}{w}-{page}.png");
             }
             ToggleGallery(window);
             Pump(1_000);
-            Snap(window, screens, $"windows-{w}-files-gallery.png");
+            Snap(window, screens, $"windows-{prefix}{w}-files-gallery.png");
             ToggleGallery(window);
         }
         window.Close();
