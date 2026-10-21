@@ -7,6 +7,7 @@ using Midfielder.Core.Clip;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Net;
 using Midfielder.Core.Transfer;
+using Midfielder.App.Continuity;
 using Midfielder.App.Ui;
 using Midfielder.Protocol;
 using System.Drawing;
@@ -30,6 +31,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
     private readonly DeviceIdentity _identity;
     private readonly PersistentTrustStore _trust;
     private readonly MidfielderNode _node;
+    private readonly PcFeatures _features;
     private readonly ClipSync _clipSync;
     private readonly ClipboardMonitor _monitor = new();
     private volatile ClipboardWriter _writer = new();
@@ -66,6 +68,8 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _identity = _storage.LoadOrCreateIdentity();
         _trust = new PersistentTrustStore(_storage);
         _node = new MidfielderNode(_identity, Environment.MachineName, DeviceKind.Windows, _trust, new Events(this));
+        _features = new PcFeatures(_node, () => _settings.Features, _ui, page => ShowMain(page));
+        _features.Changed += () => PhoneChanged?.Invoke();
         _clipSync = new ClipSync(_identity.DeviceId, BroadcastAsync, ApplyRemoteValueTaskAsync) { Enabled = _settings.SyncClipboard };
         _history = new HistoryStore(Path.Combine(_storage.Root, "history.json"));
 
@@ -135,10 +139,12 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _ = ModernMenu.RepairIfMovedAsync();
         _pendingSends.AddRange(SendArgs.Expand(SendArgs.Paths(args)));
 
+        TryRun(_features.Apply);
         UpdateStatus();
         NativeMethods.SetEfficiencyMode(true);
         AppLog.Info("Tray ready");
-        if (!args.Contains("--background") && !SendArgs.IsSend(args))
+        // Started by Windows to deliver a notification action: stay in the tray.
+        if (!args.Contains("--background") && !args.Contains("-ToastActivated") && !SendArgs.IsSend(args))
         {
             ShowMain();
             ShowPairingIfNoDevices();
@@ -165,6 +171,9 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         menu.Items.Add("Send files to phone…", null, (_, _) => PickAndSendFiles());
         menu.Items.Add("Received files", null, (_, _) => ShowMain(MainWindow.FilesName));
         menu.Items.Add(sync);
+        var ring = new ToolStripMenuItem("Ring my phone", null, (_, _) => RingPhone());
+        menu.Items.Add(ring);
+        menu.Opening += (_, _) => ring.Visible = _settings.Features.Ring && _features.Phone.CanRing;
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
         return menu;
@@ -722,6 +731,31 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _storage.SaveSettings(_settings);
     }
 
+    // ---- Optional features -------------------------------------------------------------------------
+
+    public event Action? PhoneChanged;
+
+    PhoneState IAppHost.Phone => _features.Phone;
+
+    public void ApplyFeatures()
+    {
+        _storage.SaveSettings(_settings);
+        TryRun(_features.Apply);
+    }
+
+    public bool RingPhone()
+    {
+        bool sent = _features.RingPhone();
+        if (!sent) Notify("Couldn't ring your phone", "Turn on Find my phone on both devices, and make sure the phone is connected.", ToolTipIcon.Warning);
+        return sent;
+    }
+
+    void IAppHost.SendMediaCommand(MediaAction action) => _features.SendMediaCommand(action);
+
+    void IAppHost.ReplyToNotification(string key, string text) => _features.Reply(key, text);
+
+    void IAppHost.DismissNotification(string key) => _features.Dismiss(key);
+
     ModernMenuStatus IAppHost.ModernMenu => ModernMenu.Status;
 
     public async Task<string> SetModernMenuAsync(bool on)
@@ -760,6 +794,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         if (_clipSync.CatchUpItem() is { } latest) session.TrySend(new Envelope { Clipboard = latest });
         _ui.Post(_ =>
         {
+            _features.OnPeerConnected(session);
             UpdateStatus();
             if (_pendingSends.Count > 0)
             {
@@ -830,6 +865,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
             _cts.Cancel();
             _mainForm?.Close();
+            _features.Dispose();
             _sendBatchTimer.Dispose();
             _history.Dispose();
             _clipDebounce.Dispose();
@@ -873,8 +909,14 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         public void OnPeerDisconnected(PairedDevice device, Exception? cause)
         {
             AppLog.Info($"Disconnected: {device.Name} ({cause?.Message ?? "closed"})");
-            app._ui.Post(_ => app.UpdateStatus(), null);
+            app._ui.Post(_ =>
+            {
+                app._features.OnPeerDisconnected();
+                app.UpdateStatus();
+            }, null);
         }
+
+        public void OnFeature(PeerSession from, Envelope env) => app._ui.Post(_ => app._features.OnMessage(from, env), null);
 
         /// <summary>
         /// Applying needs the UI thread. Run it on its own so the connection keeps reading even if the clipboard

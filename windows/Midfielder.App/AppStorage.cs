@@ -94,6 +94,38 @@ internal sealed class Settings
 #pragma warning disable CA1819 // a plain settings DTO for JSON
     public int[]? WindowBounds { get; set; }
 #pragma warning restore CA1819
+
+    /// <summary>Optional features; each has its own switch and off means nothing runs for it.</summary>
+    public FeatureSettings Features { get; set; } = new();
+}
+
+internal sealed class FeatureSettings
+{
+    /// <summary>Show the phone's notifications here as Windows notifications.</summary>
+    public bool Notify { get; set; }
+
+    /// <summary>Reply box and action buttons on those notifications.</summary>
+    public bool NotifyReply { get; set; } = true;
+
+    /// <summary>Share this PC's battery with the phone and show the phone's here.</summary>
+    public bool Battery { get; set; }
+
+    /// <summary>Alert when the phone is charged to <see cref="BatteryFullAt"/> or low.</summary>
+    public bool BatteryAlerts { get; set; } = true;
+
+    public int BatteryFullAt { get; set; } = 80;
+
+    /// <summary>Find my phone / find my PC.</summary>
+    public bool Ring { get; set; }
+
+    /// <summary>Music control (master switch).</summary>
+    public bool Media { get; set; } = true;
+
+    /// <summary>The phone's music in the Windows media controls.</summary>
+    public bool MediaPhoneToPc { get; set; } = true;
+
+    /// <summary>This PC's music in the phone's media controls.</summary>
+    public bool MediaPcToPhone { get; set; } = true;
 }
 
 internal sealed record StoredDevice(string Fingerprint, string Name, int Kind, string? LastAddress);

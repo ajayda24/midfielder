@@ -28,6 +28,16 @@ internal sealed class HomePage : PageBase
     private readonly TextBlock _week = Fx.Caption("", wrap: true);
     private readonly BarChart _chart = new() { Height = 150, Margin = new Thickness(0, 18, 0, 0) };
     private readonly ThumbnailCache _thumbs;
+    private readonly TextBlock _battery = Fx.Caption("");
+    private readonly Fluent.Button _ring;
+    private readonly Border _mediaCard;
+    private readonly TextBlock _mediaTitle = Fx.Text("", 15, FontWeights.SemiBold);
+    private readonly TextBlock _mediaArtist = Fx.Caption("");
+    private readonly Image _mediaArt = new() { Width = 56, Height = 56, Stretch = Stretch.UniformToFill };
+    private readonly Fluent.Button _mediaToggle;
+    private readonly Border _notifyCard;
+    private readonly StackPanel _notifyRows = new();
+    private string? _artFor;
     private readonly System.Windows.Threading.DispatcherTimer _coalesce = new() { Interval = TimeSpan.FromMilliseconds(150) };
 
     public HomePage(IAppHost host, MainWindow window) : base(host, window)
@@ -39,7 +49,8 @@ internal sealed class HomePage : PageBase
         var chip = Fx.Chip("", Fx.Offline, Fx.Surface, out _chipText, out _chipDot);
         _pair = Fx.Primary("Pair a phone", Fluent.SymbolRegular.QrCode24, Host.ShowPairing);
         // The chip keeps its size; the address or pairing hint takes the rest and wraps.
-        var info = Fx.Stack(6, _phoneName, Fx.Line(chip, _address, null, 10));
+        var info = Fx.Stack(6, _phoneName, Fx.Line(chip, _address, null, 10), _battery);
+        _battery.Visibility = Visibility.Collapsed;
         _address.VerticalAlignment = VerticalAlignment.Center;
         var badge = Fx.Badge(Fluent.SymbolRegular.Phone24, 64, Fx.Green, Brushes.White);
         var hero = Fx.Card(Fx.Line(badge, info, _pair, 20), 24);
@@ -48,10 +59,15 @@ internal sealed class HomePage : PageBase
         Add(hero, 24);
 
         // Actions
+        _ring = Fx.Secondary("Ring phone", Fluent.SymbolRegular.Speaker224, () =>
+        {
+            if (Host.RingPhone()) Window.Toast("Ringing your phone");
+        });
         Add(Fx.Wrap(10,
             Fx.Primary("Send files…", Fluent.SymbolRegular.ArrowUpload24, Host.PickAndSendFiles),
             Fx.Secondary("Send clipboard now", Fluent.SymbolRegular.ClipboardPaste24, Host.SendClipboardNow),
-            Fx.Secondary("Received files", Fluent.SymbolRegular.FolderOpen24, () => Shell.OpenFolder(Host.Settings.ReceiveFolder))), 16);
+            Fx.Secondary("Received files", Fluent.SymbolRegular.FolderOpen24, () => Shell.OpenFolder(Host.Settings.ReceiveFolder)),
+            _ring), 16);
 
         // Drop zone
         Add(DropZone(), 6);
@@ -60,6 +76,22 @@ internal sealed class HomePage : PageBase
         _transfersCard = Fx.Card(Fx.Stack(4, Fx.Heading("Transfers"), _transferRows));
         _transfersCard.Visibility = Visibility.Collapsed;
         Add(_transfersCard, 16);
+
+        // Now playing on the phone (only while music control is on and something plays)
+        _mediaToggle = Fx.IconButton(Fluent.SymbolRegular.Pause24, "Play or pause", () => Host.SendMediaCommand(Protocol.MediaAction.Toggle));
+        var controls = Fx.Row(4,
+            Fx.IconButton(Fluent.SymbolRegular.Previous24, "Previous", () => Host.SendMediaCommand(Protocol.MediaAction.Previous)),
+            _mediaToggle,
+            Fx.IconButton(Fluent.SymbolRegular.Next24, "Next", () => Host.SendMediaCommand(Protocol.MediaAction.Next)));
+        var art = new Border { CornerRadius = new CornerRadius(10), ClipToBounds = true, Background = Fx.Highlight, Child = _mediaArt, Width = 56, Height = 56 };
+        _mediaCard = Fx.Card(Fx.Stack(10, Fx.Heading("Playing on your phone"), Fx.Line(art, Fx.Stack(2, _mediaTitle, _mediaArtist), controls)));
+        _mediaCard.Visibility = Visibility.Collapsed;
+        Add(_mediaCard, 16);
+
+        // Phone notifications (only while that feature is on)
+        _notifyCard = Fx.Card(Fx.Stack(6, Fx.Heading("Phone notifications"), _notifyRows));
+        _notifyCard.Visibility = Visibility.Collapsed;
+        Add(_notifyCard, 16);
 
         // Recent files
         var seeAll = Fx.Subtle("See all", Fluent.SymbolRegular.ChevronRight24, () => Window.ShowPage(MainWindow.FilesName));
@@ -79,9 +111,11 @@ internal sealed class HomePage : PageBase
             RenderTransfers();
         };
         Host.StatusChanged += OnStatus;
+        Host.PhoneChanged += OnPhone;
         Host.Transfers.Changed += OnTransfers;
         Host.History.Changed += OnHistory;
         RenderStatus();
+        RenderPhone();
         RenderTransfers();
         RenderHistory();
     }
@@ -177,6 +211,101 @@ internal sealed class HomePage : PageBase
         _address.Text = connected.Count > 0 && Host.AddressOf(connected[0]) is { } a ? a
             : paired.Count == 0 ? "Click Pair a phone and scan the code with Midfielder on Android" : "";
         _pair.Visibility = paired.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void OnPhone() => Post(RenderPhone);
+
+    /// <summary>Phone battery, Ring button, now playing and notifications: each shown only while its feature is on.</summary>
+    private void RenderPhone()
+    {
+        var phone = Host.Phone;
+        var f = Host.Settings.Features;
+        if (phone.Battery is { } b)
+        {
+            _battery.Text = $"Battery {b.Level}%{(b.Charging ? " · charging" : b.Plugged ? " · plugged in" : "")}";
+            _battery.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _battery.Visibility = Visibility.Collapsed;
+        }
+        _ring.Visibility = f.Ring && phone.CanRing ? Visibility.Visible : Visibility.Collapsed;
+
+        if (phone.Media is { Active: true } m)
+        {
+            _mediaTitle.Text = m.Title.Length > 0 ? m.Title : m.AppName;
+            _mediaArtist.Text = string.Join(" · ", new[] { m.Artist, m.AppName }.Where(x => x.Length > 0));
+            _mediaToggle.Icon = new Fluent.SymbolIcon { Symbol = m.Playing ? Fluent.SymbolRegular.Pause24 : Fluent.SymbolRegular.Play24, FontSize = 16 };
+            if (!m.ArtUnchanged || _artFor is null)
+            {
+                _artFor = m.Title;
+                _mediaArt.Source = m.ArtJpeg.IsEmpty ? null : Decode(m.ArtJpeg.ToByteArray());
+            }
+            _mediaCard.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _artFor = null;
+            _mediaCard.Visibility = Visibility.Collapsed;
+        }
+
+        _notifyCard.Visibility = f.Notify && phone.Notifications.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _notifyRows.Children.Clear();
+        foreach (var n in phone.Notifications.Take(5)) Fx.Add(_notifyRows, NotificationRow(n), 10);
+    }
+
+    private UIElement NotificationRow(Continuity.PhoneNotification n)
+    {
+        string key = n.Key;
+        var head = Fx.Caption($"{n.App} · {Fx.When(n.At)}");
+        var title = Fx.Text(n.Title, 14, FontWeights.SemiBold);
+        var text = Fx.Text(n.Text, 13.5, color: Fx.Muted, wrap: true);
+        text.MaxHeight = 60;
+        var dismiss = Fx.IconButton(Fluent.SymbolRegular.Dismiss24, "Dismiss on phone", () => Host.DismissNotification(key));
+        var body = Fx.Stack(2, head, title, text);
+        if (n.CanReply)
+        {
+            var box = new Fluent.TextBox { PlaceholderText = "Reply", MinWidth = 200 };
+            void Send()
+            {
+                string reply = box.Text.Trim();
+                if (reply.Length == 0) return;
+                Host.ReplyToNotification(key, reply);
+                box.Text = "";
+                Window.Toast("Reply sent");
+            }
+            box.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter)
+                {
+                    Send();
+                    e.Handled = true;
+                }
+            };
+            var reply = Fx.Line(null, box, Fx.IconButton(Fluent.SymbolRegular.Send24, "Send reply", Send), 8);
+            reply.Margin = new Thickness(0, 6, 0, 0);
+            body.Children.Add(reply);
+        }
+        return Fx.Line(Fx.Badge(Fluent.SymbolRegular.Alert24, 36), body, dismiss, 12);
+    }
+
+    private static ImageSource? Decode(byte[] jpeg)
+    {
+        try
+        {
+            var image = new System.Windows.Media.Imaging.BitmapImage();
+            image.BeginInit();
+            image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            image.StreamSource = new MemoryStream(jpeg);
+            image.DecodePixelWidth = 112;
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch (Exception e) when (e is NotSupportedException or ArgumentException or IOException)
+        {
+            return null;
+        }
     }
 
     private void RenderTransfers()
@@ -281,6 +410,7 @@ internal sealed class HomePage : PageBase
     protected override void OnDispose()
     {
         Host.StatusChanged -= OnStatus;
+        Host.PhoneChanged -= OnPhone;
         Host.Transfers.Changed -= OnTransfers;
         Host.History.Changed -= OnHistory;
         _coalesce.Stop();

@@ -4,13 +4,14 @@ using Fluent = Wpf.Ui.Controls;
 
 namespace Midfielder.App.Ui;
 
-/// <summary>Windows 11 Settings-style cards: sync, Windows integration, received files, paired phone, data.</summary>
+/// <summary>Windows 11 Settings-style cards: sync, features, Windows integration, received files, paired phone, data.</summary>
 internal sealed class SettingsPage : PageBase
 {
     private readonly StackPanel _devices = new();
     private readonly TextBlock _folder = Fx.Caption("");
     private readonly TextBlock _menuState = Fx.Caption("", wrap: true);
     private readonly Fluent.ToggleSwitch _menuSwitch = new();
+    private readonly StackPanel _features = new();
     private bool _updatingMenu;
 
     public SettingsPage(IAppHost host, MainWindow window) : base(host, window)
@@ -21,6 +22,11 @@ internal sealed class SettingsPage : PageBase
         Add(Section("Sync"), 20);
         Add(Toggle(Fluent.SymbolRegular.ClipboardPaste24, "Sync clipboard", "Copy on one device, paste on the other", s.SyncClipboard, host.SetSyncClipboard), 12);
         Add(Toggle(Fluent.SymbolRegular.ArrowDownload24, "Accept files automatically", "Otherwise Midfielder asks before each transfer", s.AutoAcceptFiles, host.SetAutoAccept), 4);
+
+        Add(Section("Features"), 20);
+        Add(Fx.Caption("Each feature works when it's on here and in Midfielder on your phone. Off means it doesn't run at all.", wrap: true), 6);
+        Add(_features, 10);
+        RenderFeatures();
 
         Add(Section("Windows"), 20);
         Add(Toggle(Fluent.SymbolRegular.Power24, "Start with Windows", "Runs quietly in the tray, in efficiency mode", s.StartWithWindows, host.SetStartWithWindows), 12);
@@ -68,6 +74,68 @@ internal sealed class SettingsPage : PageBase
         return Row(icon, title, Fx.Caption(description, wrap: true), sw);
     }
 
+    /// <summary>One switch per feature; its options appear only while it's on.</summary>
+    private void RenderFeatures()
+    {
+        var f = Host.Settings.Features;
+        _features.Children.Clear();
+        void Changed()
+        {
+            Host.ApplyFeatures();
+            RenderFeatures();
+        }
+        void Main(Fluent.SymbolRegular icon, string title, string description, bool on, Action<bool> set) =>
+            Fx.Add(_features, Toggle(icon, title, description, on, v =>
+            {
+                set(v);
+                Changed();
+            }), 4);
+        void Sub(string title, string description, bool on, Action<bool> set)
+        {
+            var row = Toggle(Fluent.SymbolRegular.ChevronRight20, title, description, on, v =>
+            {
+                set(v);
+                Changed();
+            });
+            row.Margin = new Thickness(40, 0, 0, 0);
+            Fx.Add(_features, row, 2);
+        }
+
+        Main(Fluent.SymbolRegular.Alert24, "Phone notifications", "See your phone's notifications here, as Windows notifications", f.Notify, v => f.Notify = v);
+        if (f.Notify) Sub("Reply and actions", "Reply box and the notification's buttons, right in the Windows notification", f.NotifyReply, v => f.NotifyReply = v);
+
+        Main(Fluent.SymbolRegular.Battery524, "Battery sharing", "Your phone's battery here, this PC's on the phone", f.Battery, v => f.Battery = v);
+        if (f.Battery)
+        {
+            Sub("Phone battery alerts", "When it's charged (unplug to protect the battery) and when it's low", f.BatteryAlerts, v => f.BatteryAlerts = v);
+            if (f.BatteryAlerts)
+            {
+                var level = new ComboBox { MinWidth = 110, ItemsSource = new[] { "80%", "90%", "100%" }, SelectedItem = $"{f.BatteryFullAt}%" };
+                System.Windows.Automation.AutomationProperties.SetName(level, "Charged alert level");
+                level.SelectionChanged += (_, _) =>
+                {
+                    if (level.SelectedItem is string text && int.TryParse(text.TrimEnd('%'), out int v) && v != f.BatteryFullAt)
+                    {
+                        f.BatteryFullAt = v;
+                        Host.ApplyFeatures();
+                    }
+                };
+                var row = Row(Fluent.SymbolRegular.BatteryCharge24, "Charged alert at", Fx.Caption("80% is kindest to the battery"), level);
+                row.Margin = new Thickness(40, 0, 0, 0);
+                Fx.Add(_features, row, 2);
+            }
+        }
+
+        Main(Fluent.SymbolRegular.Speaker224, "Find my phone", "Ring your phone at full volume, even on silent, and let it ring this PC", f.Ring, v => f.Ring = v);
+
+        Main(Fluent.SymbolRegular.MusicNote224, "Music control", "Control music across your phone and this PC", f.Media, v => f.Media = v);
+        if (f.Media)
+        {
+            Sub("Phone music on this PC", "Shows in the Windows media controls and works with media keys", f.MediaPhoneToPc, v => f.MediaPhoneToPc = v);
+            Sub("This PC's music on the phone", "Shows in the phone's media controls and lock screen", f.MediaPcToPhone, v => f.MediaPcToPhone = v);
+        }
+    }
+
     private void OnStatus() => Post(RenderDevices);
 
     private void RenderDevices()
@@ -101,7 +169,7 @@ internal sealed class SettingsPage : PageBase
         {
             ModernMenuStatus.On => "On. Keep Midfielder.exe in this folder.",
             ModernMenuStatus.NeedsRepair => "Midfielder.exe was moved: turn it off and on again to fix.",
-            ModernMenuStatus.Unavailable => "Needs Windows 11 and the Midfielder.msix file next to Midfielder.exe.",
+            ModernMenuStatus.Unavailable => "Needs Windows 11, with MidfielderShell.dll next to Midfielder.exe.",
             _ => "Asks once for permission to trust Midfielder's certificate.",
         };
         _menuState.Foreground = state == ModernMenuStatus.NeedsRepair ? Fx.Danger : Fx.Muted;

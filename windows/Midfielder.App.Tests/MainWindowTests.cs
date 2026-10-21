@@ -2,7 +2,9 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
+using Midfielder.App.Continuity;
 using Midfielder.App.Ui;
+using Midfielder.Core.Feature;
 using Midfielder.Core.Crypto;
 using Midfielder.Core.Net;
 using Midfielder.Protocol;
@@ -256,6 +258,7 @@ public sealed partial class MainWindowTests : IDisposable
         {
             _empty = empty;
             Settings = new Settings { ReceiveFolder = dir };
+            if (!empty) Settings.Features = new FeatureSettings { Notify = true, Battery = true, Ring = true, Media = true };
             History = new HistoryStore(null);
             if (empty) return;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -319,6 +322,29 @@ public sealed partial class MainWindowTests : IDisposable
         public void SetReceiveFolder(string path) => Settings.ReceiveFolder = path;
         public void SaveSettings() { }
         public Task<string> SetModernMenuAsync(bool on) => Task.FromResult("ok");
+
+        public PhoneState Phone => _empty ? PhoneState.Empty : new PhoneState(
+            "Realme P3 Ultra",
+            new BatteryStatus { Level = 64, Charging = true, Plugged = true },
+            new MediaState
+            {
+                Active = true, AppName = "Spotify", Title = "Blinding Lights", Artist = "The Weeknd", Album = "After Hours",
+                Playing = true, PositionMs = 74_000, DurationMs = 200_000, CanNext = true, CanPrevious = true, CanSeek = true,
+            },
+            [
+                new PhoneNotification("n1", "WhatsApp", "Mom", "Dinner at 8? Bring the charger you borrowed 🙂", DateTime.Now.AddMinutes(-3), true),
+                new PhoneNotification("n2", "Gmail", "Your boarding pass", "Flight 6E 2134 · Gate 14 · Boarding 18:40", DateTime.Now.AddMinutes(-41), false),
+            ],
+            new HashSet<string> { Features.Notify, Features.Battery, Features.Ring, Features.Media });
+
+#pragma warning disable CS0067 // never raised in the fake
+        public event Action? PhoneChanged;
+#pragma warning restore CS0067
+        public void ApplyFeatures() { }
+        public bool RingPhone() => true;
+        public void SendMediaCommand(MediaAction action) { }
+        public void ReplyToNotification(string key, string text) { }
+        public void DismissNotification(string key) { }
 
         public void RaiseStatus() => StatusChanged?.Invoke();
     }

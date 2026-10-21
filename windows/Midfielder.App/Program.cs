@@ -12,7 +12,8 @@ internal static class Program
         {
             // Already running: hand over files to send (or just ask it to show itself) and exit.
             var files = SendArgs.Paths(args);
-            SendToPipe.Forward(files.Count > 0 ? files : ["--show"]);
+            // A notification action is delivered to the running instance by Windows itself.
+            if (files.Count > 0 || !args.Contains("-ToastActivated")) SendToPipe.Forward(files.Count > 0 ? files : ["--show"]);
             return 0;
         }
 

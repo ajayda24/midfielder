@@ -71,6 +71,21 @@ class VectorsTest {
     }
 
     @Test
+    fun `feature frames`() {
+        val battery = Envelope(battery_status = dev.midfielder.proto.BatteryStatus(level = 64, charging = true, plugged = true))
+        assertEquals(v("frame.battery"), frameHex(battery))
+        val action = Envelope(
+            notification_action = dev.midfielder.proto.NotificationAction(key = "0|com.whatsapp|1|null|10001", reply_text = "On my way 👍"),
+        )
+        assertEquals(v("frame.notification_action"), frameHex(action))
+        assertEquals(action, Envelopes.read(ByteArrayInputStream(Hex.decode(v("frame.notification_action"))), 1024))
+        val seek = Envelope(
+            media_command = dev.midfielder.proto.MediaCommand(action = dev.midfielder.proto.MediaAction.MEDIA_ACTION_SEEK, seek_ms = 74_000),
+        )
+        assertEquals(v("frame.media_command"), frameHex(seek))
+    }
+
+    @Test
     fun `pairing proofs`() {
         val secret = Hex.decode(v("pair.secret"))
         val client = Fingerprint(v("pair.client_fp"))

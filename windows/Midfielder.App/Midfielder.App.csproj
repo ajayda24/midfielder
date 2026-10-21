@@ -23,6 +23,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="QRCoder" Version="1.6.0" />
+    <!-- Actionable Windows notifications (reply box, buttons) for an unpackaged app. -->
+    <PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
     <PackageReference Include="WPF-UI" Version="4.3.0" />
     <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />

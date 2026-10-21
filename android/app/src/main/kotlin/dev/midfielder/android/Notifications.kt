@@ -23,6 +23,11 @@ class Notifications(context: Context) {
                 NotificationChannel(TRANSFERS, "File transfers", NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(EVENTS, "Received files", NotificationManager.IMPORTANCE_DEFAULT),
                 NotificationChannel(CLIPS, "Images copied from PC", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(FIND, "Find my phone", NotificationManager.IMPORTANCE_HIGH).apply { setSound(null, null) },
+                NotificationChannel(ALERTS, "PC battery alerts", NotificationManager.IMPORTANCE_DEFAULT),
+                NotificationChannel(PC_MEDIA, "Music playing on your PC", NotificationManager.IMPORTANCE_LOW).apply {
+                    setShowBadge(false)
+                },
             ),
         )
     }
@@ -114,12 +119,82 @@ class Notifications(context: Context) {
 
     fun cancel(transferId: String) = nm.cancel(transferId.hashCode())
 
+    /** The PC rang this phone; the sound is played by [Ringer], this is just the way to stop it. */
+    fun ringing() {
+        val stop = PendingIntent.getBroadcast(app, RING_ID, Intent(app, RingStopReceiver::class.java), PendingIntent.FLAG_IMMUTABLE)
+        nm.notify(
+            RING_ID,
+            Notification.Builder(app, FIND)
+                .setSmallIcon(R.drawable.ic_ring)
+                .setColor(ACCENT)
+                .setContentTitle("Your PC is looking for this phone")
+                .setContentText("Tap to stop ringing")
+                .setCategory(Notification.CATEGORY_ALARM)
+                .setContentIntent(stop)
+                .setDeleteIntent(stop)
+                .setAutoCancel(true)
+                .addAction(Notification.Action.Builder(null, "Found it", stop).build())
+                .build(),
+        )
+    }
+
+    fun cancelRinging() = nm.cancel(RING_ID)
+
+    fun batteryAlert(title: String, text: String) = nm.notify(
+        BATTERY_ID,
+        Notification.Builder(app, ALERTS)
+            .setSmallIcon(R.drawable.ic_battery)
+            .setColor(ACCENT)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .build(),
+    )
+
+    /** "Playing on your PC" with Android's media controls (and the lock screen) driving the PC's player. */
+    fun pcMedia(token: android.media.session.MediaSession.Token, state: dev.midfielder.proto.MediaState, art: android.graphics.Bitmap?) {
+        fun action(icon: Int, label: String, cmd: dev.midfielder.proto.MediaAction): Notification.Action {
+            val pi = PendingIntent.getBroadcast(
+                app, PC_MEDIA_ID + cmd.value,
+                Intent(app, PcMediaReceiver::class.java).putExtra(PcMediaReceiver.EXTRA_ACTION, cmd.value),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            return Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(app, icon), label, pi).build()
+        }
+        val builder = Notification.Builder(app, PC_MEDIA)
+            .setSmallIcon(R.drawable.ic_music)
+            .setColor(ACCENT)
+            .setContentTitle(state.title.ifEmpty { "Playing on your PC" })
+            .setContentText(listOf(state.artist, state.app_name).filter { it.isNotEmpty() }.joinToString(" · "))
+            .setSubText("On your PC")
+            .setLargeIcon(art)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .addAction(action(R.drawable.ic_skip_previous, "Previous", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PREVIOUS))
+            .addAction(
+                if (state.playing) action(R.drawable.ic_pause, "Pause", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PAUSE)
+                else action(R.drawable.ic_play, "Play", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PLAY),
+            )
+            .addAction(action(R.drawable.ic_skip_next, "Next", dev.midfielder.proto.MediaAction.MEDIA_ACTION_NEXT))
+            .setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(0, 1, 2))
+        nm.notify(PC_MEDIA_ID, builder.build())
+    }
+
+    fun cancelPcMedia() = nm.cancel(PC_MEDIA_ID)
+
     companion object {
         const val STATUS_ID = 1
         private const val STATUS = "status"
         private const val TRANSFERS = "transfers"
         private const val EVENTS = "events"
         private const val CLIPS = "clips"
+        private const val FIND = "find"
+        private const val ALERTS = "alerts"
+        private const val PC_MEDIA = "pc_media"
+        private const val RING_ID = 3
+        private const val BATTERY_ID = 4
+        private const val PC_MEDIA_ID = 100
         private const val CLIP_IMAGE_ID = 2
         private const val CLIP_IMAGE_TIMEOUT_MS = 2 * 60_000L
         private const val ACCENT = 0xFF1F6F5C.toInt()

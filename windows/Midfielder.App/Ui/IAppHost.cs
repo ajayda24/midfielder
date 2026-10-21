@@ -1,4 +1,6 @@
+using Midfielder.App.Continuity;
 using Midfielder.Core.Net;
+using Midfielder.Protocol;
 
 namespace Midfielder.App.Ui;
 
@@ -33,6 +35,24 @@ internal interface IAppHost
 
     /// <summary>Persists <see cref="Settings"/> (e.g. after the window saved its size).</summary>
     void SaveSettings();
+
+    // ---- Optional features (each switched on or off in Settings → Features) ----
+
+    /// <summary>The connected phone's battery, music, notifications and capabilities.</summary>
+    PhoneState Phone { get; }
+
+    /// <summary><see cref="Phone"/> changed. Raised on the UI thread.</summary>
+    event Action? PhoneChanged;
+
+    /// <summary>Saves <see cref="Settings.Features"/> and starts or stops features to match.</summary>
+    void ApplyFeatures();
+
+    /// <summary>Find my phone. False (and a hint for the user) if the phone can't ring right now.</summary>
+    bool RingPhone();
+
+    void SendMediaCommand(MediaAction action);
+    void ReplyToNotification(string key, string text);
+    void DismissNotification(string key);
 
     /// <summary>The Windows 11 top-level "Send to phone" entry (sparse package).</summary>
     ModernMenuStatus ModernMenu { get; }

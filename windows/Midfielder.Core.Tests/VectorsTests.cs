@@ -91,6 +91,19 @@ public class VectorsTests
     }
 
     [Fact]
+    public async Task FeatureFrames()
+    {
+        var battery = new Envelope { BatteryStatus = new BatteryStatus { Level = 64, Charging = true, Plugged = true } };
+        Assert.Equal(V["frame.battery"], await FrameHex(battery));
+        var action = new Envelope { NotificationAction = new NotificationAction { Key = "0|com.whatsapp|1|null|10001", ReplyText = "On my way 👍" } };
+        Assert.Equal(V["frame.notification_action"], await FrameHex(action));
+        var decoded = await Envelopes.ReadAsync(new MemoryStream(Hex.Decode(V["frame.notification_action"])), 1024, CancellationToken.None);
+        Assert.Equal(action, decoded);
+        var seek = new Envelope { MediaCommand = new MediaCommand { Action = MediaAction.Seek, SeekMs = 74_000 } };
+        Assert.Equal(V["frame.media_command"], await FrameHex(seek));
+    }
+
+    [Fact]
     public void PairingProofs()
     {
         byte[] secret = Hex.Decode(V["pair.secret"]);

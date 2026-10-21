@@ -9,11 +9,12 @@
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap">
+  IgnorableNamespaces="uap uap10 desktop desktop4 desktop5 com rescap">
   <Identity Name="Midfielder" Publisher="CN=Midfielder sideload" Version="1.0.0.0" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>Midfielder</DisplayName>
@@ -51,6 +52,18 @@
             <com:SurrogateServer DisplayName="Midfielder: Send to phone">
               <com:Class Id="5009E094-7566-4276-BCE2-E254ADA449BC" Path="MidfielderShell.dll" ThreadingModel="STA" />
             </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <!-- With package identity, the buttons and reply box on Midfielder's Windows notifications are delivered
+             through this activator (the notifications toolkit reads the CLSID from here). -->
+        <desktop:Extension Category="windows.toastNotificationActivation">
+          <desktop:ToastNotificationActivation ToastActivatorCLSID="7C3A5D7E-2B1F-4E8A-9C6D-3F2E1A0B5C4D" />
+        </desktop:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="Midfielder.exe" Arguments="-ToastActivated" DisplayName="Midfielder notifications">
+              <com:Class Id="7C3A5D7E-2B1F-4E8A-9C6D-3F2E1A0B5C4D" />
+            </com:ExeServer>
           </com:ComServer>
         </com:Extension>
       </Extensions>

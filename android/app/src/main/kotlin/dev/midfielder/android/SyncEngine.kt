@@ -90,13 +90,17 @@ class SyncEngine(context: Context) : Closeable {
         override fun onPeerConnected(session: PeerSession) {
             clipSync.catchUpItem()?.let { session.trySend(Envelope(clipboard = it)) }
             flushWaitingSends()
+            features.onPeerConnected(session)
             refreshStatus("Connected to ${session.peer.name}")
         }
 
         override fun onPeerDisconnected(device: PairedDevice, cause: Throwable?) {
+            features.onPeerDisconnected()
             refreshStatus("Disconnected from ${device.name}")
             connections.kick("disconnected")
         }
+
+        override fun onFeature(from: PeerSession, env: Envelope) = features.onMessage(from, env)
 
         override suspend fun onClipboard(from: PairedDevice, item: ClipboardItem) {
             val result = try {
@@ -170,6 +174,9 @@ class SyncEngine(context: Context) : Closeable {
         NodeConfig(clock = SystemClock::elapsedRealtime),
     )
 
+    /** Notifications, battery, find my phone and music; each switched on or off in Settings. */
+    val features: PhoneFeatures by lazy { PhoneFeatures(app, node, storage, notifications) }
+
     val clipSync: ClipSync = ClipSync(
         identity.deviceId, scope,
         broadcast = {
@@ -199,6 +206,7 @@ class SyncEngine(context: Context) : Closeable {
         connections.onScreenChanged = { on ->
             if (on) for (d in node.connectedPeers.value) node.session(d.fingerprint)?.probe()
         }
+        features.apply()
         connections.start()
         triggers.start()
         ShareShortcuts.update(app, storage.trustStore.all())
@@ -415,6 +423,7 @@ class SyncEngine(context: Context) : Closeable {
             ?: "${Build.MANUFACTURER} ${Build.MODEL}"
 
     override fun close() {
+        features.close()
         triggers.stop()
         connections.stop()
         clipSync.close()

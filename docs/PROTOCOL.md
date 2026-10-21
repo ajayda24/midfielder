@@ -73,3 +73,24 @@ reacts only by dialing an already-paired device over authenticated TLS, rate lim
 | Files per offer | 1000 |
 | File name | 150 chars after sanitizing |
 | Device name | 64 chars |
+
+## Optional features (capabilities 50–79)
+
+Optional features ride on the control connection. Each has a capability string that a device puts in
+`Hello.capabilities` **only while the user has that feature switched on**. When a switch changes mid-session the
+device sends `FeaturesChanged` with its full list, which replaces the earlier one. A device sends a feature message
+only to peers that advertise the capability and only while its own switch is on, so turning a feature off on either
+device stops it for the pair. Unknown capabilities and messages are ignored.
+
+| Capability | Messages | Direction |
+|---|---|---|
+| `notify` | `NotificationPosted` (same `key` = update), `NotificationRemoved` | phone → PC |
+|  | `NotificationAction` (exactly one of `reply_text`, `button_id`, `dismiss`) | PC → phone |
+| `battery` | `BatteryStatus` (sent when level or charger state changes, and on connect) | both ways |
+| `ring` | `RingRequest` (`start = false` stops; the receiver also stops on its own after 30 s) | both ways |
+| `media` | `MediaState` (what plays on the sender; `active = false` clears; art omitted when `art_unchanged`) | both ways |
+|  | `MediaCommand` (controls the receiver's current player) | both ways |
+
+Limits: notification title 200 and text 1,000 characters, icon ≤ 8 KiB PNG, at most 3 buttons; album art ≤ 64 KiB
+JPEG (300 px). Senders coalesce: notifications are sent only when title or text change, media state is debounced
+(250–300 ms).

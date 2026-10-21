@@ -135,6 +135,52 @@ class AppStorage(context: Context) {
         get() = prefs.getBoolean("accept_files", true)
         set(v) = prefs.edit().putBoolean("accept_files", v).apply()
 
+    // ---- Optional features: each one has its own switch; off means nothing runs for it. -----------------
+
+    /** Show this phone's notifications on the PC (needs notification access). */
+    var featNotify: Boolean
+        get() = prefs.getBoolean("feat_notify", false)
+        set(v) = prefs.edit().putBoolean("feat_notify", v).apply()
+
+    /** Allow replying and tapping notification buttons from the PC. */
+    var notifyReply: Boolean
+        get() = prefs.getBoolean("notify_reply", true)
+        set(v) = prefs.edit().putBoolean("notify_reply", v).apply()
+
+    /** Share battery level both ways and alert about the PC's battery. */
+    var featBattery: Boolean
+        get() = prefs.getBoolean("feat_battery", false)
+        set(v) = prefs.edit().putBoolean("feat_battery", v).apply()
+
+    var batteryAlerts: Boolean
+        get() = prefs.getBoolean("battery_alerts", true)
+        set(v) = prefs.edit().putBoolean("battery_alerts", v).apply()
+
+    /** Charge level for the "unplug" alert: 80, 90 or 100. */
+    var batteryFullAt: Int
+        get() = prefs.getInt("battery_full_at", 80)
+        set(v) = prefs.edit().putInt("battery_full_at", v).apply()
+
+    /** Find my phone / find my PC. */
+    var featRing: Boolean
+        get() = prefs.getBoolean("feat_ring", false)
+        set(v) = prefs.edit().putBoolean("feat_ring", v).apply()
+
+    /** Music control (master switch). */
+    var featMedia: Boolean
+        get() = prefs.getBoolean("feat_media", true)
+        set(v) = prefs.edit().putBoolean("feat_media", v).apply()
+
+    /** Show this phone's music on the PC and let the PC control it (needs notification access). */
+    var mediaPhoneToPc: Boolean
+        get() = prefs.getBoolean("media_phone_to_pc", true)
+        set(v) = prefs.edit().putBoolean("media_phone_to_pc", v).apply()
+
+    /** Show the PC's music in this phone's media controls. */
+    var mediaPcToPhone: Boolean
+        get() = prefs.getBoolean("media_pc_to_phone", true)
+        set(v) = prefs.edit().putBoolean("media_pc_to_phone", v).apply()
+
     private companion object {
         const val IDENTITY = "identity.p12.enc"
         const val DEVICES = "devices.json.enc"

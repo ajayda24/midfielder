@@ -36,6 +36,8 @@ class HomeTab(host: MainActivity) : Tab(host) {
     private lateinit var statusChip: Chip
     private lateinit var capture: TextView
     private lateinit var pairButton: MaterialButton
+    private lateinit var pcBattery: TextView
+    private lateinit var ringButton: MaterialButton
     private lateinit var setupCard: MaterialCardView
     private lateinit var setupText: TextView
     private lateinit var transfersCard: MaterialCardView
@@ -77,8 +79,21 @@ class HomeTab(host: MainActivity) : Tab(host) {
             setPadding(0, ui.dp(14), 0, 0)
         }
         hero.body.addView(capture)
+        pcBattery = ui.text("", com.google.android.material.R.style.TextAppearance_Material3_BodyMedium, ui.onPrimaryContainer).apply {
+            setPadding(0, ui.dp(8), 0, 0)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_battery, 0, 0, 0)
+            compoundDrawablePadding = ui.dp(6)
+            compoundDrawableTintList = android.content.res.ColorStateList.valueOf(ui.onPrimaryContainer)
+            visibility = View.GONE
+        }
+        hero.body.addView(pcBattery)
         pairButton = ui.button("Pair with your PC", Ui.Button.FILLED, R.drawable.ic_qr) { host.startScan() }
         hero.body.addView(pairButton, ui.matchWidth(16))
+        ringButton = ui.button("Ring PC", Ui.Button.TONAL, R.drawable.ic_ring) {
+            val sent = SyncEngine.current?.features?.ringPc() == true
+            android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
+        }.apply { visibility = View.GONE }
+        hero.body.addView(ringButton, ui.matchWidth(12))
         root.addView(hero.card, ui.matchWidth(0))
 
         // Setup banner (only while something is missing).
@@ -175,6 +190,7 @@ class HomeTab(host: MainActivity) : Tab(host) {
             val engine = engine()
             launch { combine(engine.status, EventLog.entries) { s, _ -> s }.collect { renderStatus(engine) } }
             launch { engine.transfers.active.collect(::renderTransfers) }
+            launch { engine.features.pc.collect(::renderPc) }
             launch {
                 engine.history.version.collect {
                     renderStats(engine)
@@ -216,6 +232,19 @@ class HomeTab(host: MainActivity) : Tab(host) {
         pairButton.visibility = if (paired) View.GONE else View.VISIBLE
         capture.text = "Phone → PC copy: ${engine.captureMode}"
         capture.visibility = if (paired) View.VISIBLE else View.GONE
+    }
+
+    /** The PC's battery and the Ring PC button, each only while its feature is on (on both devices). */
+    private fun renderPc(pc: dev.midfielder.android.PhoneFeatures.Pc) {
+        val b = pc.battery
+        pcBattery.visibility = if (b == null) View.GONE else View.VISIBLE
+        if (b != null) pcBattery.text = "PC battery ${b.level}%" + when {
+            b.charging -> " · charging"
+            b.plugged -> " · plugged in"
+            else -> ""
+        }
+        val ringOn = dev.midfielder.android.AppStorage(host).featRing
+        ringButton.visibility = if (ringOn && pc.canRing) View.VISIBLE else View.GONE
     }
 
     private fun renderTransfers(list: List<ActiveTransfer>) {

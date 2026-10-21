@@ -7,6 +7,7 @@ import dev.midfielder.android.AppStorage
 import dev.midfielder.android.FileActions
 import dev.midfielder.android.HistoryStore
 import dev.midfielder.android.MainActivity
+import dev.midfielder.android.PhoneNotificationListener
 import dev.midfielder.android.R
 import dev.midfielder.android.Setup
 import dev.midfielder.android.SyncEngine
@@ -17,9 +18,11 @@ import kotlinx.coroutines.launch
 class SettingsTab(host: MainActivity) : Tab(host) {
     private lateinit var checklist: LinearLayout
     private lateinit var pcSection: LinearLayout
+    private lateinit var featuresBox: LinearLayout
+    private lateinit var storage: AppStorage
 
     override fun build(): View {
-        val storage = AppStorage(host)
+        storage = AppStorage(host)
         val root = page()
         root.addView(ui.headline("Settings").apply { setPadding(ui.dp(4), ui.dp(12), 0, ui.dp(4)) })
 
@@ -34,6 +37,11 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             storage.acceptFiles = it
         }.indent())
         root.addView(sync.card, ui.matchWidth(4))
+
+        root.addView(ui.sectionHeader("Features"))
+        val features = ui.card(paddingDp = 8)
+        featuresBox = features.body
+        root.addView(features.card, ui.matchWidth(4))
 
         root.addView(ui.sectionHeader("Automatic copy setup"))
         val setup = ui.card(paddingDp = 8)
@@ -78,7 +86,99 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         scope.launch { engine().status.collect { renderPc(it) } }
     }
 
+    /** One switch per feature; a feature's options only show while it is on. Off means nothing runs for it. */
+    private fun renderFeatures() {
+        if (!::featuresBox.isInitialized) return
+        val box = featuresBox
+        box.removeAllViews()
+        fun changed(needsAccess: Boolean = false) {
+            SyncEngine.current?.features?.apply()
+            if (needsAccess && !PhoneNotificationListener.isGranted(host)) openNotificationAccess()
+            renderFeatures()
+        }
+        fun sub(view: LinearLayout) = view.apply { setPadding(ui.dp(40), paddingTop, ui.dp(12), paddingBottom) }
+
+        box.addView(ui.switchRow("Notifications on PC", "See and reply to this phone's notifications on your PC", storage.featNotify) {
+            storage.featNotify = it
+            changed(needsAccess = it)
+        }.indent())
+        if (storage.featNotify) {
+            box.addView(sub(ui.switchRow("Reply and actions from PC", "Answer messages and tap notification buttons", storage.notifyReply) {
+                storage.notifyReply = it
+            }))
+        }
+        val accessNeeded = (storage.featNotify || (storage.featMedia && storage.mediaPhoneToPc)) && !PhoneNotificationListener.isGranted(host)
+        if (accessNeeded) {
+            box.addView(ui.listRow(
+                "Allow notification access", "Needed for notifications and phone music on your PC",
+                ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
+                below = ui.button("Allow", Ui.Button.TONAL) { openNotificationAccess() },
+            ).indent())
+        }
+
+        box.addView(ui.divider())
+        box.addView(ui.switchRow("Battery sharing", "See your PC's battery here and this phone's on the PC", storage.featBattery) {
+            storage.featBattery = it
+            changed()
+        }.indent())
+        if (storage.featBattery) {
+            box.addView(sub(ui.switchRow("PC battery alerts", "Tell me when the PC is charged to ${storage.batteryFullAt}% or low", storage.batteryAlerts) {
+                storage.batteryAlerts = it
+                changed()
+            }))
+            if (storage.batteryAlerts) {
+                val chips = ui.horizontal().apply { setPadding(ui.dp(40), 0, ui.dp(12), ui.dp(8)) }
+                for (level in listOf(80, 90, 100)) {
+                    chips.addView(ui.filterChip("$level%", storage.batteryFullAt == level).apply {
+                        setOnClickListener {
+                            storage.batteryFullAt = level
+                            changed()
+                        }
+                    }, ui.wrap(if (level == 80) 0 else 8))
+                }
+                box.addView(chips)
+            }
+        }
+
+        box.addView(ui.divider())
+        box.addView(ui.switchRow("Find my phone", "Your PC can ring this phone at full volume, even on silent", storage.featRing) {
+            storage.featRing = it
+            changed()
+        }.indent())
+
+        box.addView(ui.divider())
+        box.addView(ui.switchRow("Music control", "Control music across your phone and PC", storage.featMedia) {
+            storage.featMedia = it
+            changed(needsAccess = it && storage.mediaPhoneToPc)
+        }.indent())
+        if (storage.featMedia) {
+            box.addView(sub(ui.switchRow("Phone music on PC", "Shows in the Windows media controls", storage.mediaPhoneToPc) {
+                storage.mediaPhoneToPc = it
+                changed(needsAccess = it)
+            }))
+            box.addView(sub(ui.switchRow("PC music on phone", "Shows in this phone's media controls", storage.mediaPcToPhone) {
+                storage.mediaPcToPhone = it
+                changed()
+            }))
+        }
+    }
+
+    private fun openNotificationAccess() {
+        val intent = if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                .putExtra(
+                    android.provider.Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                    PhoneNotificationListener.component(host).flattenToString(),
+                )
+        } else {
+            android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+        }
+        runCatching { host.startActivity(intent) }
+            .onFailure { runCatching { host.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }
+    }
+
     fun renderChecklist() {
+        renderFeatures()
         if (!::checklist.isInitialized) return
         checklist.removeAllViews()
         Setup.steps(host).forEachIndexed { i, step ->

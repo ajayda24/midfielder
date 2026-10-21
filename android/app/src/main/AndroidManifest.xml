@@ -21,6 +21,14 @@
 
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
+    <!-- Names of the apps playing music (shown on the PC): apps with a launcher icon are visible. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".MidfielderApp"
         android:allowBackup="false"
@@ -123,6 +131,26 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Notifications and music on the PC. Disabled until one of those features is switched on. -->
+        <service
+            android:name=".PhoneNotificationListener"
+            android:enabled="false"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <receiver
+            android:name=".PcMediaReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".RingStopReceiver"
+            android:exported="false" />
 
         <!-- "Save to gallery" on the image-from-PC notification. -->
         <receiver
