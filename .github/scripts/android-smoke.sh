@@ -112,7 +112,7 @@ if [ -n "$DEBUG_APK" ]; then
     echo "::warning::couldn't find the Notifications switch for the toggle check"
   fi
 
-  for n in 2 3 4 5; do
+  for n in 2 3 4 5 6 7 8; do
     adb shell input swipe $((W / 2)) $((H * 3 / 4)) $((W / 2)) $((H / 4)) 500
     sleep 1.5
     adb exec-out screencap -p > "screens/android-$API-settings-$n.png"
