@@ -107,14 +107,14 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                 storage.notifyReply = it
             }))
         }
-        val accessNeeded = (storage.featNotify || (storage.featMedia && storage.mediaPhoneToPc)) && !PhoneNotificationListener.isGranted(host)
-        if (accessNeeded) {
-            box.addView(ui.listRow(
-                "Allow notification access", "Needed for notifications and phone music on your PC",
-                ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
-                below = ui.button("Allow", Ui.Button.TONAL) { openNotificationAccess() },
-            ).indent())
-        }
+        // The access prompt goes under whichever switch needs it.
+        val granted = PhoneNotificationListener.isGranted(host)
+        fun accessPrompt(why: String) = box.addView(sub(ui.listRow(
+            "Allow notification access", why,
+            ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
+            below = ui.button("Allow", Ui.Button.TONAL) { openNotificationAccess() },
+        )))
+        if (storage.featNotify && !granted) accessPrompt("Notifications on PC needs it to read this phone's notifications")
 
         box.addView(ui.divider())
         box.addView(ui.switchRow("Battery sharing", "See your PC's battery here and this phone's on the PC", storage.featBattery) {
@@ -156,6 +156,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                 storage.mediaPhoneToPc = it
                 changed(needsAccess = it)
             }))
+            if (storage.mediaPhoneToPc && !granted && !storage.featNotify) accessPrompt("Phone music on PC needs it to see what's playing")
             box.addView(sub(ui.switchRow("PC music on phone", "Shows in this phone's media controls", storage.mediaPcToPhone) {
                 storage.mediaPcToPhone = it
                 changed()
