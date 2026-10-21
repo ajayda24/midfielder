@@ -54,7 +54,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
     private Action? _balloonAction;
     private readonly object _applyGate = new();
     private Task _applyChain = Task.CompletedTask;
-    private int _activeTransfers;
+    private readonly Stack<IDisposable> _transferHolds = new();
     private long _lastProgressUiMs;
 
     public TrayContext(string[] args)
@@ -141,7 +141,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
 
         TryRun(_features.Apply);
         UpdateStatus();
-        NativeMethods.SetEfficiencyMode(true);
+        Performance.Start();
         AppLog.Info("Tray ready");
         // Started by Windows to deliver a notification action: stay in the tray.
         if (!args.Contains("--background") && !args.Contains("-ToastActivated") && !SendArgs.IsSend(args))
@@ -618,16 +618,15 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
     /// <summary>Full speed while bytes are moving; back to efficiency mode when idle.</summary>
     private void BeginTransfer()
     {
-        if (Interlocked.Increment(ref _activeTransfers) == 1) NativeMethods.SetEfficiencyMode(false);
+        var hold = Performance.Hold();
+        lock (_transferHolds) _transferHolds.Push(hold);
     }
 
     private void EndTransfer()
     {
-        if (Interlocked.Decrement(ref _activeTransfers) <= 0)
-        {
-            Interlocked.Exchange(ref _activeTransfers, 0);
-            NativeMethods.SetEfficiencyMode(true);
-        }
+        IDisposable? hold;
+        lock (_transferHolds) _transferHolds.TryPop(out hold);
+        hold?.Dispose();
     }
 
     private static string Describe(ClipContent c) => c switch

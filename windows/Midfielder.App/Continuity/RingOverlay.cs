@@ -23,6 +23,7 @@ internal sealed class RingOverlay : Window
 
     public RingOverlay(string phoneName)
     {
+        WindowSpeed.Attach(this, "Ring overlay");
         WpfApp.Ensure();
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;

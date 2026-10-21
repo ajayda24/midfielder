@@ -95,7 +95,13 @@ finally {
         $start = ($lines | Select-String -SimpleMatch 'Midfielder starting' | Select-Object -Last 1).LineNumber
         $run = if ($start) { $lines[($start - 1)..($lines.Count - 1)] } else { $lines }
         Write-Host '--- midfielder.log (this run) ---'; $run | Select-Object -First 400 | Write-Host
-        if (-not ($run -match 'Main window rendered')) { $problems += 'the log never says "Main window rendered"' }
+        $rendered = $run | Select-String -Pattern 'Main window rendered in (\d+) ms' | Select-Object -First 1
+        if (-not $rendered) { $problems += 'the log never says "Main window rendered"' }
+        else {
+            $ms = [int]$rendered.Matches[0].Groups[1].Value
+            Write-Host "Main window first frame: $ms ms"
+            if ($ms -gt 3000) { $problems += "the main window took $ms ms to draw its first frame (limit 3000)" }
+        }
     }
     else { $problems += 'no log file' }
 }

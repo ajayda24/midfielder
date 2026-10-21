@@ -25,6 +25,7 @@ internal sealed class MainWindow : Fluent.FluentWindow
 
     public MainWindow(IAppHost host, string page = HomeName)
     {
+        WindowSpeed.Attach(this, "Main window");
         WpfApp.Ensure();
         _host = host;
         Title = "Midfielder";
@@ -89,7 +90,6 @@ internal sealed class MainWindow : Fluent.FluentWindow
         UpdateStatus();
         ShowPage(page);
         AppLog.Info("Main window created");
-        ContentRendered += (_, _) => AppLog.Info("Main window rendered");
     }
 
     public string CurrentPage { get; private set; } = "";

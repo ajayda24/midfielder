@@ -15,6 +15,7 @@ internal sealed class PairingWindow : Fluent.FluentWindow
 
     public PairingWindow(PairingInvite invite)
     {
+        WindowSpeed.Attach(this, "Pairing window");
         WpfApp.Ensure();
         Title = "Pair your phone";
         Icon = AppIcon.Image(32);

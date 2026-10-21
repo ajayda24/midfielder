@@ -136,4 +136,16 @@ internal static partial class NativeMethods
         };
         SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, ref state, (uint)Marshal.SizeOf<PROCESS_POWER_THROTTLING_STATE>());
     }
+
+    private const int DWMWA_CLOAK = 13;
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    /// <summary>Hides a window from the screen without hiding it from layout (no white flash before its first frame).</summary>
+    public static void Cloak(IntPtr hwnd, bool cloaked)
+    {
+        int value = cloaked ? 1 : 0;
+        _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, ref value, sizeof(int));
+    }
 }
