@@ -181,11 +181,33 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             return;
         }
         AppLog.Info("Creating main window");
-        _mainForm = new MainWindow(this, page ?? MainWindow.HomeName);
-        _mainForm.Closed += (_, _) => _mainForm = null;
-        _mainForm.Show();
-        _mainForm.Activate();
-        AppLog.Info("Main window shown");
+        try
+        {
+            _mainForm = new MainWindow(this, page ?? MainWindow.HomeName);
+            _mainForm.Closed += (_, _) => _mainForm = null;
+            _mainForm.Show();
+            _mainForm.Activate();
+            AppLog.Info("Main window shown");
+        }
+        catch (Exception e)
+        {
+            // The tray (clipboard sync, transfers) keeps running even if the window can't be built.
+            AppLog.Error("The main window couldn't open", e);
+            CloseQuietly(_mainForm);
+            _mainForm = null;
+            Notify("Midfielder's window couldn't open", "Clipboard sync still works. Details are in the log: " + AppLog.Path, ToolTipIcon.Error);
+        }
+    }
+
+    private static void CloseQuietly(System.Windows.Window? w)
+    {
+        try
+        {
+            w?.Close();
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     private void UpdateStatus()
@@ -224,15 +246,26 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             return;
         }
         AppLog.Info("Opening pairing window");
-        var invite = _node.OpenPairing(LanDiscovery.LocalAddresses(_port));
-        _pairingForm = new PairingWindow(invite);
-        _pairingForm.Closed += (_, _) =>
+        try
         {
-            _node.ClosePairing();
+            var invite = _node.OpenPairing(LanDiscovery.LocalAddresses(_port));
+            _pairingForm = new PairingWindow(invite);
+            _pairingForm.Closed += (_, _) =>
+            {
+                _node.ClosePairing();
+                _pairingForm = null;
+            };
+            _pairingForm.Show();
+            _pairingForm.Activate();
+        }
+        catch (Exception e)
+        {
+            AppLog.Error("The pairing window couldn't open", e);
+            CloseQuietly(_pairingForm);
             _pairingForm = null;
-        };
-        _pairingForm.Show();
-        _pairingForm.Activate();
+            _node.ClosePairing();
+            Notify("Pairing window couldn't open", "Details are in the log: " + AppLog.Path, ToolTipIcon.Error);
+        }
     }
 
     private void OnPaired(PairedDevice device)

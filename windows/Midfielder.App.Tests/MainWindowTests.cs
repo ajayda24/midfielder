@@ -36,6 +36,26 @@ public sealed partial class MainWindowTests : IDisposable
         }
     }
 
+    /// <summary>What a first start looks like: nothing paired or sent yet, with real animations running.</summary>
+    [Fact]
+    public void FreshInstallWithAnimationsRenders()
+    {
+        OnSta(() =>
+        {
+            Anim.Disabled = false;
+            try
+            {
+                var problems = new List<string>();
+                RunWindow(new FakeHost(_dir, empty: true), null, [(1100, 740)], problems);
+                Assert.True(problems.Count == 0, string.Join(Environment.NewLine, problems));
+            }
+            finally
+            {
+                Anim.Disabled = true;
+            }
+        });
+    }
+
     [Fact]
     public void EveryPageRendersAndNothingLeaks()
     {
@@ -235,10 +255,15 @@ public sealed partial class MainWindowTests : IDisposable
     {
         private readonly PairedDevice _phone = new(new Fingerprint(new string('a', 64)), "Realme P3 Ultra", DeviceKind.Android, "192.168.1.23:47810");
 
-        public FakeHost(string dir)
+        private readonly bool _empty;
+
+        /// <param name="empty">A fresh install: not paired, no history, nothing moving.</param>
+        public FakeHost(string dir, bool empty = false)
         {
+            _empty = empty;
             Settings = new Settings { ReceiveFolder = dir };
             History = new HistoryStore(null);
+            if (empty) return;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var records = new List<TransferRecord>();
             Color[] colors = [Color.SeaGreen, Color.SteelBlue, Color.Goldenrod, Color.IndianRed, Color.MediumPurple, Color.Teal];
@@ -276,8 +301,8 @@ public sealed partial class MainWindowTests : IDisposable
         public HistoryStore History { get; }
         public TransferTracker Transfers { get; } = new(minIntervalMs: 0);
         public Settings Settings { get; }
-        public IReadOnlyList<PairedDevice> PairedDevices => [_phone];
-        public IReadOnlyList<PairedDevice> ConnectedDevices => [_phone];
+        public IReadOnlyList<PairedDevice> PairedDevices => _empty ? [] : [_phone];
+        public IReadOnlyList<PairedDevice> ConnectedDevices => _empty ? [] : [_phone];
         public string DeviceId => "0123456789abcdef0123456789abcdef";
         public string Fingerprint => new Fingerprint(new string('b', 64)).Display();
         public int Port => 47810;

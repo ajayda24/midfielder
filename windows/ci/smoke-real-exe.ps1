@@ -94,7 +94,7 @@ finally {
         $lines = Get-Content $log
         $start = ($lines | Select-String -SimpleMatch 'Midfielder starting' | Select-Object -Last 1).LineNumber
         $run = if ($start) { $lines[($start - 1)..($lines.Count - 1)] } else { $lines }
-        Write-Host '--- midfielder.log (this run) ---'; $run | Select-Object -Last 60 | Write-Host
+        Write-Host '--- midfielder.log (this run) ---'; $run | Select-Object -First 400 | Write-Host
         if (-not ($run -match 'Main window rendered')) { $problems += 'the log never says "Main window rendered"' }
     }
     else { $problems += 'no log file' }
