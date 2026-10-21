@@ -15,7 +15,7 @@ internal sealed class HomePage : PageBase
     private readonly TextBlock _phoneName = Fx.Text("", 22, FontWeights.SemiBold);
     private readonly TextBlock _chipText;
     private readonly Ellipse _chipDot;
-    private readonly TextBlock _address = Fx.Caption("");
+    private readonly TextBlock _address = Fx.Caption("", wrap: true);
     private readonly Fluent.Button _pair;
     private readonly Border _transfersCard;
     private readonly StackPanel _transferRows = new();
@@ -38,7 +38,8 @@ internal sealed class HomePage : PageBase
         // Hero
         var chip = Fx.Chip("", Fx.Offline, Fx.Surface, out _chipText, out _chipDot);
         _pair = Fx.Primary("Pair a phone", Fluent.SymbolRegular.QrCode24, Host.ShowPairing);
-        var info = Fx.Stack(6, _phoneName, Fx.Row(10, chip, _address));
+        // The chip keeps its size; the address or pairing hint takes the rest and wraps.
+        var info = Fx.Stack(6, _phoneName, Fx.Line(chip, _address, null, 10));
         _address.VerticalAlignment = VerticalAlignment.Center;
         var badge = Fx.Badge(Fluent.SymbolRegular.Phone24, 64, Fx.Green, Brushes.White);
         var hero = Fx.Card(Fx.Line(badge, info, _pair, 20), 24);
