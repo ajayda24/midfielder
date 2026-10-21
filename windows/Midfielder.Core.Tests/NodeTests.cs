@@ -129,6 +129,49 @@ public sealed class NodeTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AudioStreamCarriesEveryChunkInOrderAndEndsCleanly()
+    {
+        var (pc, phone, addr) = PcAndPhone();
+        await Within(phone.Node.PairAsync(pc.Node.OpenPairing([addr])));
+        var pcSide = await Within(pc.Events.Sessions.Reader.ReadAsync().AsTask());
+
+        int bytes = AudioFrames.ChunkBytes(48_000, 2);
+        Assert.Equal(3_840, bytes);
+        const int chunks = 100; // 2 s
+        pc.Node.ServeStream(pcSide.Peer.Fingerprint, "s1", async (net, ct) =>
+        {
+            for (uint seq = 0; seq < chunks; seq++)
+            {
+                var pcm = new byte[bytes];
+                for (int i = 0; i < pcm.Length; i++) pcm[i] = (byte)(seq + i);
+                await AudioFrames.WriteAsync(net, seq, pcm, ct);
+            }
+        });
+        var received = new List<AudioChunk>();
+        await Within(phone.Node.OpenStreamAsync(pc.Node.Fingerprint, "s1", async (net, ct) =>
+        {
+            while (await AudioFrames.ReadAsync(net, ct) is { } chunk) received.Add(chunk);
+        }, CancellationToken.None).ContinueWith(t => t.IsFaulted ? throw t.Exception! : true));
+        Assert.Equal(Enumerable.Range(0, chunks).Select(i => (uint)i), received.Select(c => c.Seq));
+        Assert.All(received, c => Assert.Equal(bytes, c.Pcm.Length));
+        Assert.Equal(5, received[5].Pcm[0]);
+
+        // Already used (or never offered): refused, so the reader sees the stream end at once.
+        int count = 0;
+        try
+        {
+            await Within(phone.Node.OpenStreamAsync(pc.Node.Fingerprint, "s1", async (net, ct) =>
+            {
+                while (await AudioFrames.ReadAsync(net, ct) is not null) count++;
+            }, CancellationToken.None).ContinueWith(_ => true));
+        }
+        catch (IOException)
+        {
+        }
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
     public void BatteryAlertsFireOnceAndRearmWithHysteresis()
     {
         var a = new BatteryAlerts(fullAt: 80, lowAt: 15);

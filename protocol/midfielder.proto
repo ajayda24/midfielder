@@ -35,10 +35,13 @@ message Envelope {
     DataOpen data_open = 40;
     DataResume data_resume = 41;
     DataDone data_done = 42;
+    AudioOpen audio_open = 43;                     // first frame of a data connection that carries an audio stream
+    AudioChunk audio_chunk = 44;                   // audio on that connection
 
     // Optional features. A side sends these only to peers that advertise the matching capability
     // (in Hello, updated by FeaturesChanged) and only while its own switch for the feature is on.
     FeaturesChanged features_changed = 50;
+    AudioRequest audio_request = 52;               // capability "audio": start/stop an audio route
     NotificationPosted notification_posted = 55;   // capability "notify": phone -> PC
     NotificationRemoved notification_removed = 56; // capability "notify": phone -> PC
     NotificationAction notification_action = 57;   // PC -> phone (reply, button, dismiss)
@@ -46,6 +49,8 @@ message Envelope {
     RingRequest ring_request = 61;                 // capability "ring": either way
     MediaState media_state = 70;                   // capability "media": what is playing on the sender
     MediaCommand media_command = 71;               // capability "media": control the receiver's player
+    AudioOffer audio_offer = 80;                   // capability "audio": a stream is ready, open a data connection
+    AudioStop audio_stop = 81;                     // capability "audio": a stream ended (either side)
   }
 }
 
@@ -243,4 +248,38 @@ enum MediaAction {
 message MediaCommand {
   MediaAction action = 1;
   int64 seek_ms = 2;             // for MEDIA_ACTION_SEEK
+}
+
+enum AudioRoute {
+  AUDIO_ROUTE_UNSPECIFIED = 0;
+  AUDIO_ROUTE_PHONE_TO_PC = 1;   // the PC becomes the phone's Bluetooth speaker
+  AUDIO_ROUTE_PC_TO_PHONE = 2;   // the PC's sound streamed to the phone over Wi-Fi
+}
+
+// Ask the peer to start or stop a route (e.g. the phone's "Play PC audio here").
+message AudioRequest {
+  AudioRoute route = 1;
+  bool start = 2;
+}
+
+// The sender has an audio stream ready: the dialer opens a data connection whose first frame is AudioOpen.
+message AudioOffer {
+  string stream_id = 1;          // 32 hex chars
+  uint32 sample_rate = 2;        // 44100 or 48000
+  uint32 channels = 3;           // 2
+}
+
+message AudioStop {
+  string stream_id = 1;
+  string reason = 2;
+}
+
+message AudioOpen {
+  string stream_id = 1;
+}
+
+// 20 ms of interleaved signed 16-bit little-endian PCM. Silence is sent as zeros, so the stream never stalls.
+message AudioChunk {
+  uint32 seq = 1;
+  bytes pcm = 2;
 }

@@ -18,4 +18,7 @@ public static class Features
 
     /// <summary>Accepts MediaState and MediaCommand.</summary>
     public const string Media = "media";
+
+    /// <summary>Audio routes: AudioRequest, AudioOffer/AudioStop and audio streams.</summary>
+    public const string Audio = "audio";
 }

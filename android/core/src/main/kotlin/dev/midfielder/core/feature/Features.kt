@@ -17,4 +17,7 @@ public object Features {
 
     /** Accepts MediaState and MediaCommand. */
     public const val MEDIA: String = "media"
+
+    /** Audio routes: AudioRequest, AudioOffer/AudioStop and audio streams. */
+    public const val AUDIO: String = "audio"
 }

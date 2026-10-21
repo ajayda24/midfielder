@@ -83,6 +83,10 @@ class VectorsTest {
             media_command = dev.midfielder.proto.MediaCommand(action = dev.midfielder.proto.MediaAction.MEDIA_ACTION_SEEK, seek_ms = 74_000),
         )
         assertEquals(v("frame.media_command"), frameHex(seek))
+        val offer = Envelope(audio_offer = dev.midfielder.proto.AudioOffer("00112233445566778899aabbccddeeff", 48_000, 2))
+        assertEquals(v("frame.audio_offer"), frameHex(offer))
+        val chunk = Envelope(audio_chunk = dev.midfielder.proto.AudioChunk(7, byteArrayOf(0, 1, -1, 0x7f).toByteString()))
+        assertEquals(v("frame.audio_chunk"), frameHex(chunk))
     }
 
     @Test

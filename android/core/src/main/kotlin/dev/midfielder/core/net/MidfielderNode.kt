@@ -16,6 +16,7 @@ import dev.midfielder.core.transfer.FileSource
 import dev.midfielder.core.transfer.TransferEngine
 import dev.midfielder.core.transfer.TransferFailedException
 import dev.midfielder.core.wire.Envelopes
+import dev.midfielder.proto.AudioOpen
 import dev.midfielder.proto.ClipboardItem
 import dev.midfielder.proto.DataOpen
 import dev.midfielder.proto.DeviceKind
@@ -203,7 +204,59 @@ public class MidfielderNode(
                 closingOnCancel(socket) { serveData(input, output, peerFp, first.data_open) }
                 socket.close()
             }
+            first.audio_open != null -> {
+                if (!trustStore.isTrusted(peerFp)) throw ProtocolException("stream connection from unpaired peer")
+                val stream = streams[first.audio_open.stream_id]?.takeIf { it.peer == peerFp }
+                    ?: throw ProtocolException("unknown stream")
+                socket.soTimeout = 0 // we only write
+                try {
+                    closingOnCancel(socket) { stream.writer(output) }
+                } finally {
+                    streams.remove(first.audio_open.stream_id, stream)
+                    socket.close()
+                }
+            }
             else -> throw ProtocolException("unexpected first frame")
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Streams (live audio): one data connection per stream, opened by the dialer
+    // ---------------------------------------------------------------------------------------------
+
+    private class ServedStream(val peer: Fingerprint, val writer: (OutputStream) -> Unit)
+
+    private val streams = ConcurrentHashMap<String, ServedStream>()
+
+    /**
+     * Listener side: when [peer] opens a data connection for [streamId], [writer] runs on it (blocking, on an IO
+     * thread) and the connection closes when it returns or throws. Tell the peer with an AudioOffer.
+     */
+    public fun serveStream(peer: Fingerprint, streamId: String, writer: (OutputStream) -> Unit) {
+        streams[streamId] = ServedStream(peer, writer)
+    }
+
+    /** Stops offering a stream that hasn't been opened yet (an open one ends when its writer returns). */
+    public fun stopServing(streamId: String) {
+        streams.remove(streamId)
+    }
+
+    /**
+     * Dialer side: opens a data connection to [peer] for [streamId] and runs [reader] on it until it returns, the
+     * stream ends or the coroutine is cancelled (which closes the connection).
+     */
+    public suspend fun openStream(peer: Fingerprint, streamId: String, reader: (InputStream) -> Unit) {
+        val session = sessions[peer] ?: throw NotConnectedException("not connected")
+        val socket = openTls(session.remote, peer)
+        socket.use {
+            socket.soTimeout = config.dataReadTimeoutMs
+            val input = BufferedInputStream(socket.inputStream, IO_BUFFER)
+            val output = BufferedOutputStream(socket.outputStream, IO_BUFFER)
+            closingOnCancel(socket) {
+                Envelopes.write(output, Envelope(audio_open = AudioOpen(stream_id = streamId)), Limits.MAX_HANDSHAKE_FRAME_BYTES)
+                output.flush()
+                reader(input)
+            }
         }
     }
 
@@ -388,7 +441,8 @@ public class MidfielderNode(
             }
             env.notification_posted != null || env.notification_removed != null || env.notification_action != null ||
                 env.battery_status != null || env.ring_request != null ||
-                env.media_state != null || env.media_command != null -> feature(session, env)
+                env.media_state != null || env.media_command != null ||
+                env.audio_request != null || env.audio_offer != null || env.audio_stop != null -> feature(session, env)
             else -> Unit // Unknown or out-of-place message: ignore for forward compatibility.
         }
     }

@@ -101,6 +101,10 @@ public class VectorsTests
         Assert.Equal(action, decoded);
         var seek = new Envelope { MediaCommand = new MediaCommand { Action = MediaAction.Seek, SeekMs = 74_000 } };
         Assert.Equal(V["frame.media_command"], await FrameHex(seek));
+        var offer = new Envelope { AudioOffer = new AudioOffer { StreamId = "00112233445566778899aabbccddeeff", SampleRate = 48_000, Channels = 2 } };
+        Assert.Equal(V["frame.audio_offer"], await FrameHex(offer));
+        var chunk = new Envelope { AudioChunk = new AudioChunk { Seq = 7, Pcm = ByteString.CopyFrom(0, 1, 0xff, 0x7f) } };
+        Assert.Equal(V["frame.audio_chunk"], await FrameHex(chunk));
     }
 
     [Fact]

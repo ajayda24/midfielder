@@ -185,6 +185,22 @@ public sealed class MidfielderNode : IAsyncDisposable
 
         await using (ssl.ConfigureAwait(false))
         {
+            if (first.BodyCase == Envelope.BodyOneofCase.AudioOpen)
+            {
+                if (!_trust.IsTrusted(peerFp)) throw new ProtocolException("stream connection from unpaired peer");
+                string id = first.AudioOpen.StreamId;
+                if (!_streams.TryGetValue(id, out var stream) || stream.Peer != peerFp) throw new ProtocolException("unknown stream");
+                try
+                {
+                    await stream.Writer(ssl, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _streams.TryRemove(new KeyValuePair<string, ServedStream>(id, stream));
+                }
+                client.Dispose();
+                return;
+            }
             if (first.BodyCase != Envelope.BodyOneofCase.DataOpen) throw new ProtocolException("unexpected first frame");
             if (!_trust.IsTrusted(peerFp)) throw new ProtocolException("data connection from unpaired peer");
             await ServeDataAsync(ssl, peerFp, first.DataOpen, ct).ConfigureAwait(false);
@@ -385,6 +401,9 @@ public sealed class MidfielderNode : IAsyncDisposable
             case Envelope.BodyOneofCase.RingRequest:
             case Envelope.BodyOneofCase.MediaState:
             case Envelope.BodyOneofCase.MediaCommand:
+            case Envelope.BodyOneofCase.AudioRequest:
+            case Envelope.BodyOneofCase.AudioOffer:
+            case Envelope.BodyOneofCase.AudioStop:
                 Feature(session, env);
                 break;
             default:
@@ -775,6 +794,44 @@ public sealed class MidfielderNode : IAsyncDisposable
             return;
         }
         throw new ProtocolException("unknown transfer");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Streams (live audio): one data connection per stream, opened by the dialer
+    // ---------------------------------------------------------------------------------------------
+
+    private sealed record ServedStream(Fingerprint Peer, Func<Stream, CancellationToken, Task> Writer);
+
+    private readonly ConcurrentDictionary<string, ServedStream> _streams = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Listener side: when <paramref name="peer"/> opens a data connection for <paramref name="streamId"/>,
+    /// <paramref name="writer"/> runs on it and the connection closes when it returns or throws. Tell the peer with an
+    /// AudioOffer.
+    /// </summary>
+    public void ServeStream(Fingerprint peer, string streamId, Func<Stream, CancellationToken, Task> writer) =>
+        _streams[streamId] = new ServedStream(peer, writer);
+
+    /// <summary>Stops offering a stream that hasn't been opened yet (an open one ends when its writer returns).</summary>
+    public void StopServing(string streamId) => _streams.TryRemove(streamId, out _);
+
+    /// <summary>
+    /// Dialer side: opens a data connection to <paramref name="peer"/> for <paramref name="streamId"/> and runs
+    /// <paramref name="reader"/> on it until it returns, the stream ends or <paramref name="ct"/> is cancelled.
+    /// </summary>
+    public async Task OpenStreamAsync(Fingerprint peer, string streamId, Func<Stream, CancellationToken, Task> reader, CancellationToken ct)
+    {
+        var session = Session(peer) ?? throw new NotConnectedException("not connected");
+        var (client, ssl) = await OpenTlsAsync(session.Remote, peer, ct).ConfigureAwait(false);
+        using (client)
+        {
+            await using (ssl.ConfigureAwait(false))
+            {
+                await Envelopes.WriteAsync(ssl, new Envelope { AudioOpen = new AudioOpen { StreamId = streamId } }, Limits.MaxHandshakeFrameBytes, ct).ConfigureAwait(false);
+                await ssl.FlushAsync(ct).ConfigureAwait(false);
+                await reader(ssl, ct).ConfigureAwait(false);
+            }
+        }
     }
 
     private async Task RunDataAsDialerAsync(PeerSession session, string transferId, int index, Func<Stream, CancellationToken, Task> block, CancellationToken ct)

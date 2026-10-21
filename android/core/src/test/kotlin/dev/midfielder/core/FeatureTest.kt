@@ -3,6 +3,7 @@ package dev.midfielder.core
 import dev.midfielder.core.crypto.DeviceIdentity
 import dev.midfielder.core.crypto.HostPort
 import dev.midfielder.core.crypto.PairingInvite
+import dev.midfielder.core.feature.AudioFrames
 import dev.midfielder.core.feature.BatteryAlerts
 import dev.midfielder.core.feature.Features
 import dev.midfielder.core.net.InMemoryTrustStore
@@ -82,6 +83,37 @@ class FeatureTest {
             while (phoneSide.has(Features.BATTERY)) delay(10)
         }
         assertEquals(0, phone.sendFeature(Features.BATTERY, battery))
+    }
+
+    @Test
+    fun `an audio stream carries every chunk in order and ends cleanly`() {
+        val pcEvents = Recorder()
+        val pc = node("pc", DeviceKind.DEVICE_KIND_WINDOWS, pcEvents)
+        val phone = node("phone", DeviceKind.DEVICE_KIND_ANDROID, Recorder())
+        val port = pc.startListening(0, InetAddress.getLoopbackAddress())
+        await { phone.pair(PairingInvite.parse(pc.openPairing(listOf(HostPort("127.0.0.1", port))).toUri())) }
+        val pcSide = await { pcEvents.sessions.receive() }
+
+        val bytes = AudioFrames.chunkBytes(48_000, 2)
+        assertEquals(3_840, bytes)
+        val chunks = 100 // 2 s
+        pc.serveStream(pcSide.peer.fingerprint, "s1") { out ->
+            for (seq in 0 until chunks) AudioFrames.write(out, seq, ByteArray(bytes) { (seq + it).toByte() })
+        }
+        val received = mutableListOf<dev.midfielder.proto.AudioChunk>()
+        await {
+            phone.openStream(pc.fingerprint, "s1") { input ->
+                while (true) received += AudioFrames.read(input) ?: break
+            }
+        }
+        assertEquals((0 until chunks).toList(), received.map { it.seq })
+        assertTrue(received.all { it.pcm.size == bytes })
+        assertEquals(5.toByte(), received[5].pcm[0])
+
+        // A stream that was never offered (or was already used) is refused.
+        org.junit.jupiter.api.assertThrows<java.io.IOException> {
+            await { phone.openStream(pc.fingerprint, "s1") { input -> AudioFrames.read(input) ?: throw java.io.EOFException("refused") } }
+        }
     }
 
     @Test
