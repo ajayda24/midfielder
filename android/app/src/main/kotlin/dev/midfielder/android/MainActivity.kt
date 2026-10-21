@@ -77,12 +77,23 @@ class MainActivity : AppCompatActivity() {
         if (intent.getBooleanExtra(EXTRA_DEMO, false) && (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             Demo.seed(this)
         }
+        demoFeatures(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        demoFeatures(intent)
         intent.getStringExtra(EXTRA_TAB)?.let(::showTab)
         handleIntent(intent)
+    }
+
+    /** Debug builds only: turn every feature on for screenshots (`--ez demo_features true`). */
+    private fun demoFeatures(intent: Intent) {
+        if (!intent.getBooleanExtra(EXTRA_DEMO_FEATURES, false) || (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+        Demo.allFeatures(this)
+        val current = tabName
+        tabName = ""
+        showTab(current) // rebuild the current tab with the new switches
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -356,6 +367,7 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_OPEN_RECORD = "open_record"
         /** Debug builds only: fill history with sample files (for screenshots). */
         const val EXTRA_DEMO = "demo"
+        const val EXTRA_DEMO_FEATURES = "demo_features"
         const val TAB_HOME = "home"
         const val TAB_FILES = "files"
         const val TAB_SETTINGS = "settings"

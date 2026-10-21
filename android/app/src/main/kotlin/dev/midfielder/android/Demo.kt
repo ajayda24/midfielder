@@ -15,6 +15,20 @@ import kotlin.concurrent.thread
 
 /** Debug builds only (see MainActivity.EXTRA_DEMO): sample history and stats so CI screenshots show real screens. */
 object Demo {
+    /** Every feature and option on (straight to storage: no permission screens), so CI shows the full Settings. */
+    fun allFeatures(context: Context) {
+        val s = AppStorage(context)
+        s.featNotify = true
+        s.featBattery = true
+        s.featRing = true
+        s.featMedia = true
+        s.featAudio = true
+        s.featCalls = true
+        s.callsSms = true
+        s.featPresence = true
+        SyncEngine.current?.features?.apply()
+    }
+
     fun seed(context: Context) {
         val app = context.applicationContext
         thread(name = "demo-seed") {

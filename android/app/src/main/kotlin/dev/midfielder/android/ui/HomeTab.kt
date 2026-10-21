@@ -37,10 +37,12 @@ class HomeTab(host: MainActivity) : Tab(host) {
     private lateinit var capture: TextView
     private lateinit var pairButton: MaterialButton
     private lateinit var pcBattery: TextView
-    private lateinit var ringButton: MaterialButton
-    private lateinit var audioRow: LinearLayout
-    private lateinit var pcAudioButton: MaterialButton
-    private lateinit var phoneAudioButton: MaterialButton
+    private lateinit var pcActions: LinearLayout
+    private lateinit var ringTile: View
+    private lateinit var pcAudioTile: View
+    private lateinit var pcAudioTitle: TextView
+    private lateinit var phoneAudioTile: View
+    private val storage by lazy { dev.midfielder.android.AppStorage(host) }
     private lateinit var setupCard: MaterialCardView
     private lateinit var setupText: TextView
     private lateinit var transfersCard: MaterialCardView
@@ -92,25 +94,6 @@ class HomeTab(host: MainActivity) : Tab(host) {
         hero.body.addView(pcBattery)
         pairButton = ui.button("Pair with your PC", Ui.Button.FILLED, R.drawable.ic_qr) { host.startScan() }
         hero.body.addView(pairButton, ui.matchWidth(16))
-        ringButton = ui.button("Ring PC", Ui.Button.TONAL, R.drawable.ic_ring) {
-            val sent = SyncEngine.current?.features?.ringPc() == true
-            android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
-        }.apply { visibility = View.GONE }
-        hero.body.addView(ringButton, ui.matchWidth(12))
-        // Audio between the devices: the PC's sound here (Wi-Fi), this phone's sound on the PC (Bluetooth).
-        audioRow = ui.horizontal().apply { visibility = View.GONE }
-        pcAudioButton = ui.button("PC audio here", Ui.Button.TONAL, R.drawable.ic_headphones) { togglePcAudio() }
-        phoneAudioButton = ui.button("Play on PC", Ui.Button.TONAL, R.drawable.ic_music) {
-            val sent = SyncEngine.current?.features?.requestAudio(dev.midfielder.proto.AudioRoute.AUDIO_ROUTE_PHONE_TO_PC, start = true) == true
-            android.widget.Toast.makeText(
-                host,
-                if (sent) "Your PC is connecting to this phone over Bluetooth" else "Turn on Audio in Midfielder on your PC too",
-                android.widget.Toast.LENGTH_SHORT,
-            ).show()
-        }
-        audioRow.addView(pcAudioButton, ui.weight())
-        audioRow.addView(phoneAudioButton, ui.weight(startDp = 8))
-        hero.body.addView(audioRow, ui.matchWidth(8))
         root.addView(hero.card, ui.matchWidth(0))
 
         // Setup banner (only while something is missing).
@@ -133,6 +116,27 @@ class HomeTab(host: MainActivity) : Tab(host) {
         grid.addView(tile(R.drawable.ic_folder, "Received", "Open the folder") { FileActions.openFolder(host) }, cell(0))
         grid.addView(tile(R.drawable.ic_qr, "Pair PC", "Scan a code") { host.startScan() }, cell(1))
         root.addView(grid, ui.matchWidth(12))
+
+        // With the PC: one compact row, each tile only while its feature is on (on both devices). Kept out of the
+        // hero so the top stays calm.
+        pcActions = ui.horizontal().apply { visibility = View.GONE }
+        ringTile = compactTile(R.drawable.ic_ring, "Ring PC") {
+            val sent = SyncEngine.current?.features?.ringPc() == true
+            android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
+        }.first
+        val pcAudio = compactTile(R.drawable.ic_headphones, "PC audio here") { togglePcAudio() }
+        pcAudioTile = pcAudio.first
+        pcAudioTitle = pcAudio.second
+        phoneAudioTile = compactTile(R.drawable.ic_music, "Play on PC") {
+            val sent = SyncEngine.current?.features?.requestAudio(dev.midfielder.proto.AudioRoute.AUDIO_ROUTE_PHONE_TO_PC, start = true) == true
+            android.widget.Toast.makeText(
+                host,
+                if (sent) "Your PC is connecting to this phone over Bluetooth" else "Turn on Audio in Midfielder on your PC too",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }.first
+        for (t in listOf(ringTile, pcAudioTile, phoneAudioTile)) pcActions.addView(t, ui.weight().apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) })
+        root.addView(pcActions, ui.matchWidth(6))
 
         // Live transfers.
         val transfers = ui.card(Ui.Card.FILLED)
@@ -176,6 +180,22 @@ class HomeTab(host: MainActivity) : Tab(host) {
     private fun cell(col: Int) = GridLayout.LayoutParams(GridLayout.spec(GridLayout.UNDEFINED), GridLayout.spec(col, 1f)).apply {
         width = 0
         setMargins(if (col == 0) 0 else ui.dp(6), ui.dp(6), if (col == 0) ui.dp(6) else 0, ui.dp(6))
+    }
+
+    /** A small tile: icon above a one-line title. Returns the tile and its title (for live labels). */
+    private fun compactTile(icon: Int, title: String, onClick: () -> Unit): Pair<View, TextView> {
+        val box = ui.card(Ui.Card.FILLED, paddingDp = 12)
+        box.body.gravity = android.view.Gravity.CENTER_HORIZONTAL
+        box.body.addView(ui.iconBadge(icon, 36, ui.secondaryContainer, ui.onSecondaryContainer, cornerDp = 12))
+        val label = ui.oneLine(ui.text(title, com.google.android.material.R.style.TextAppearance_Material3_LabelLarge, ui.onSurface)).apply {
+            setPadding(0, ui.dp(8), 0, 0)
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        }
+        box.body.addView(label)
+        box.card.isClickable = true
+        box.card.contentDescription = title
+        box.card.setOnClickListener { onClick() }
+        return box.card to label
     }
 
     private fun tile(icon: Int, title: String, sub: String, onClick: () -> Unit): View {
@@ -260,14 +280,15 @@ class HomeTab(host: MainActivity) : Tab(host) {
             b.plugged -> " · plugged in"
             else -> ""
         }
-        val ringOn = dev.midfielder.android.AppStorage(host).featRing
-        ringButton.visibility = if (ringOn && pc.canRing) View.VISIBLE else View.GONE
-        val storage = dev.midfielder.android.AppStorage(host)
+        fun show(v: View, on: Boolean) {
+            v.visibility = if (on) View.VISIBLE else View.GONE
+        }
         val audioOn = storage.featAudio && pc.canAudio
-        pcAudioButton.visibility = if (audioOn && storage.audioPcToPhone) View.VISIBLE else View.GONE
-        phoneAudioButton.visibility = if (audioOn && storage.audioPhoneToPc) View.VISIBLE else View.GONE
-        audioRow.visibility = if (pcAudioButton.visibility == View.VISIBLE || phoneAudioButton.visibility == View.VISIBLE) View.VISIBLE else View.GONE
-        pcAudioButton.text = if (pc.audioHere) "Stop PC audio" else "PC audio here"
+        show(ringTile, storage.featRing && pc.canRing)
+        show(pcAudioTile, audioOn && storage.audioPcToPhone)
+        show(phoneAudioTile, audioOn && storage.audioPhoneToPc)
+        show(pcActions, listOf(ringTile, pcAudioTile, phoneAudioTile).any { it.visibility == View.VISIBLE })
+        pcAudioTitle.text = if (pc.audioHere) "Stop PC audio" else "PC audio here"
     }
 
     private fun togglePcAudio() {

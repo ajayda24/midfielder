@@ -77,5 +77,49 @@ if [ -n "$DEBUG_APK" ]; then
   sleep 2
   adb exec-out screencap -p > "screens/android-$API-home-scrolled.png"
   adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::debug build crashed"; adb logcat -d -b crash; exit 1; }
+
+  echo "== Every feature on: Settings top to bottom, Home"
+  for p in READ_PHONE_STATE READ_CALL_LOG ANSWER_PHONE_CALLS READ_CONTACTS SEND_SMS BLUETOOTH_ADVERTISE; do
+    adb shell pm grant dev.midfielder android.permission.$p 2>/dev/null || true
+  done
+  adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab settings --ez demo_features true > /dev/null
+  sleep 3
+  adb exec-out screencap -p > "screens/android-$API-settings-1.png"
+
+  # Flip a feature switch and check the screen doesn't rebuild: the same cards are there right after the tap
+  # (a rebuild used to fade the whole Features section out and in), and the switch really changed.
+  adb shell uiautomator dump /sdcard/ui.xml > /dev/null && adb shell cat /sdcard/ui.xml > ui-before.xml
+  NODE=$(grep -o 'content-desc="Notifications on PC"[^>]*' ui-before.xml | head -1)
+  if [ -n "$NODE" ]; then
+    B=$(echo "$NODE" | grep -o 'bounds="[^"]*"' | grep -o '[0-9]\+' | tr '\n' ' ')
+    set -- $B
+    X=$(( ($1 + $3) / 2 )); Y=$(( ($2 + $4) / 2 ))
+    BEFORE=$(echo "$NODE" | grep -o 'checked="[a-z]*"')
+    adb shell input tap $X $Y
+    sleep 0.15
+    adb exec-out screencap -p > "screens/android-$API-settings-toggle.png"
+    adb shell uiautomator dump /sdcard/ui.xml > /dev/null && adb shell cat /sdcard/ui.xml > ui-after.xml
+    AFTER=$(grep -o 'content-desc="Notifications on PC"[^>]*' ui-after.xml | head -1 | grep -o 'checked="[a-z]*"')
+    CARDS_BEFORE=$(grep -o 'text="[^"]*"' ui-before.xml | grep -c -E 'Notifications on PC|Battery sharing|Find my phone|Music control')
+    CARDS_AFTER=$(grep -o 'text="[^"]*"' ui-after.xml | grep -c -E 'Notifications on PC|Battery sharing|Find my phone|Music control')
+    echo "switch: $BEFORE -> $AFTER; cards on screen: $CARDS_BEFORE -> $CARDS_AFTER"
+    [ "$BEFORE" != "$AFTER" ] || { echo "::error::tapping the feature switch didn't change it"; exit 1; }
+    [ "$CARDS_BEFORE" = "$CARDS_AFTER" ] || { echo "::error::the feature cards changed after one toggle (rebuild/blink)"; exit 1; }
+    # Back on without the notification-access screen: set it again the demo way (rebuilds Settings at the top).
+    adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab settings --ez demo_features true > /dev/null
+    sleep 2
+  else
+    echo "::warning::couldn't find the Notifications switch for the toggle check"
+  fi
+
+  for n in 2 3 4 5; do
+    adb shell input swipe $((W / 2)) $((H * 3 / 4)) $((W / 2)) $((H / 4)) 500
+    sleep 1.5
+    adb exec-out screencap -p > "screens/android-$API-settings-$n.png"
+  done
+  adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab home > /dev/null
+  sleep 2
+  adb exec-out screencap -p > "screens/android-$API-home-features.png"
+  adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::debug build crashed with features on"; adb logcat -d -b crash; exit 1; }
 fi
 echo "Smoke test passed"

@@ -25,6 +25,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
     override fun build(): View {
         storage = AppStorage(host)
         val root = page()
+        pageRoot = root
         root.addView(ui.headline("Settings").apply { setPadding(ui.dp(4), ui.dp(12), 0, ui.dp(4)) })
 
         root.addView(ui.sectionHeader("Sync"))
@@ -45,6 +46,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         })
         featuresBox = ui.vertical()
         root.addView(featuresBox, ui.matchWidth(0))
+        buildFeatures()
 
         root.addView(ui.sectionHeader("Automatic copy setup"))
         val setup = ui.card(paddingDp = 8)
@@ -87,147 +89,256 @@ class SettingsTab(host: MainActivity) : Tab(host) {
     override fun start(scope: CoroutineScope) {
         renderChecklist()
         scope.launch { engine().status.collect { renderPc(it) } }
-        // Feature cards say whether the PC has each feature on too.
-        scope.launch { engine().features.pc.collect { renderFeatures() } }
+        // Feature cards say whether the PC has each feature on too: text updates in place, nothing is rebuilt.
+        scope.launch { engine().features.pc.collect { refresh(animate = false) } }
     }
 
     /**
-     * One card per feature: icon, title, description, a status line and the switch; the feature's options sit inside
-     * the same card and slide open while it's on. Off means nothing runs for it.
+     * One feature: icon, title, description, a status line and the switch, with the feature's options inside the
+     * same card. Built once; switching only slides the options open or closed and updates text in place, so the
+     * rest of the screen never redraws (no blink, no jumping).
      */
-    private fun renderFeatures() {
-        if (!::featuresBox.isInitialized) return
-        val box = featuresBox
-        android.transition.TransitionManager.beginDelayedTransition(box, android.transition.AutoTransition().setDuration(220))
-        box.removeAllViews()
-        val pc = SyncEngine.current?.features?.pc?.value
-        val granted = PhoneNotificationListener.isGranted(host)
-        fun changed(needsAccess: Boolean = false) {
-            SyncEngine.current?.features?.apply()
-            if (needsAccess && !PhoneNotificationListener.isGranted(host)) openNotificationAccess()
-            // Runtime permissions for what was just switched on (calls, the beacon); the rest re-applies on grant.
-            val missing = runtimePermissionsMissing()
-            if (missing.isNotEmpty()) host.requestPermissions(missing.toTypedArray(), dev.midfielder.android.MainActivity.REQ_FEATURES)
-            renderFeatures()
+    private inner class FeatureCard(
+        icon: Int,
+        title: String,
+        description: String,
+        val capability: String,
+        val isOn: () -> Boolean,
+        set: (Boolean) -> Unit,
+    ) {
+        val card = ui.card(Ui.Card.FILLED, paddingDp = 0)
+        private val badge = ui.iconBadge(icon, 44, ui.secondaryContainer, ui.onSecondaryContainer, cornerDp = 14)
+        val status = ui.text("", com.google.android.material.R.style.TextAppearance_Material3_LabelMedium, ui.onSurfaceVariant).apply {
+            setPadding(0, ui.dp(4), 0, 0)
         }
-        fun grantPrompt(parent: LinearLayout, why: String) = parent.addView(ui.listRow(
-            "Permission needed", why,
-            ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
-            below = ui.button("Grant", Ui.Button.TONAL) {
-                host.requestPermissions(runtimePermissionsMissing().toTypedArray(), dev.midfielder.android.MainActivity.REQ_FEATURES)
-            },
-        ))
+        private val divider = ui.divider()
+        val options = ui.vertical().apply { setPadding(ui.dp(16), 0, ui.dp(12), ui.dp(8)) }
 
-        /** Adds a feature card; returns its options area (empty and hidden while the feature is off). */
-        fun card(icon: Int, title: String, description: String, on: Boolean, capability: String, set: (Boolean) -> Unit): LinearLayout {
-            val c = ui.card(Ui.Card.FILLED, paddingDp = 0)
+        init {
             val header = ui.horizontal().apply { setPadding(ui.dp(16), ui.dp(14), ui.dp(12), ui.dp(14)) }
-            header.addView(ui.iconBadge(icon, 44, if (on) ui.primaryContainer else ui.secondaryContainer, if (on) ui.onPrimaryContainer else ui.onSecondaryContainer, cornerDp = 14))
+            header.addView(badge)
             val texts = ui.vertical().apply { setPadding(ui.dp(14), 0, ui.dp(8), 0) }
             texts.addView(ui.title(title))
             texts.addView(ui.supporting(description))
-            val (statusText, color) = when {
-                !on -> "Off" to ui.onSurfaceVariant
-                pc == null || pc.name == null -> "On · works when your PC is connected" to ui.onSurfaceVariant
-                capability !in pc.capabilities -> "Turn it on in Midfielder on your PC too" to ui.errorColor
-                else -> "On · working with ${pc.name}" to ui.primary
-            }
-            texts.addView(ui.text(statusText, com.google.android.material.R.style.TextAppearance_Material3_LabelMedium, color).apply {
-                setPadding(0, ui.dp(4), 0, 0)
-            })
+            texts.addView(status)
             header.addView(texts, ui.weight())
-            header.addView(ui.switch(on) { v ->
+            header.addView(ui.switch(isOn()) { v ->
                 set(v)
-                changed(needsAccess = v && capability in setOf(Features.NOTIFY, Features.MEDIA))
-            }, ui.wrap())
-            c.body.addView(header)
-            val options = ui.vertical().apply { setPadding(ui.dp(16), 0, ui.dp(12), ui.dp(8)) }
-            if (on) {
-                c.body.addView(ui.divider())
-                c.body.addView(options)
-            }
-            box.addView(c.card, ui.matchWidth(10))
-            return options
+                onFeatureSwitched(this, v)
+            }.apply { contentDescription = title }, ui.wrap())
+            card.body.addView(header)
+            card.body.addView(divider)
+            card.body.addView(options)
+            featuresBox.addView(card.card, ui.matchWidth(10))
         }
-        fun option(parent: LinearLayout, title: String, subtitle: String, on: Boolean, set: (Boolean) -> Unit, access: Boolean = false) =
-            parent.addView(ui.switchRow(title, subtitle, on) {
+
+        /** Options show only while the feature is on, and only if it has any. */
+        fun showOptions() {
+            val on = isOn()
+            val any = (0 until options.childCount).any { options.getChildAt(it).visibility == View.VISIBLE }
+            divider.visibility = if (on && any) View.VISIBLE else View.GONE
+            options.visibility = if (on && any) View.VISIBLE else View.GONE
+            (badge.background as? android.graphics.drawable.GradientDrawable)?.setColor(if (on) ui.primaryContainer else ui.secondaryContainer)
+            ((badge as? android.view.ViewGroup)?.getChildAt(0) as? android.widget.ImageView)?.imageTintList =
+                android.content.res.ColorStateList.valueOf(if (on) ui.onPrimaryContainer else ui.onSecondaryContainer)
+        }
+    }
+
+    private val cards = mutableListOf<FeatureCard>()
+    private lateinit var pageRoot: LinearLayout
+
+    /** Views inside the cards whose visibility or text depends on state (permissions, nested options, the PC). */
+    private val dynamic = mutableListOf<() -> Unit>()
+
+    /** Builds the feature cards once. */
+    private fun buildFeatures() {
+        cards.clear()
+        dynamic.clear()
+        featuresBox.removeAllViews()
+        fun card(icon: Int, title: String, description: String, capability: String, isOn: () -> Boolean, set: (Boolean) -> Unit) =
+            FeatureCard(icon, title, description, capability, isOn, set).also { cards += it }
+        fun option(c: FeatureCard, title: String, subtitle: String, on: Boolean, perms: () -> List<String> = { emptyList() }, set: (Boolean) -> Unit): View {
+            val row = ui.switchRow(title, subtitle, on) {
                 set(it)
-                changed(needsAccess = access && it)
-            })
-        fun accessPrompt(parent: LinearLayout, why: String) = parent.addView(ui.listRow(
-            "Allow notification access", why,
+                optionChanged(if (it) perms() else emptyList())
+            }
+            c.options.addView(row)
+            return row
+        }
+        /** A row shown only while [visible]; [text] (if given) is refreshed with the rest. */
+        fun conditional(c: FeatureCard, view: View, visible: () -> Boolean) {
+            c.options.addView(view)
+            dynamic += { view.visibility = if (visible()) View.VISIBLE else View.GONE }
+        }
+        fun prompt(why: String, label: String, onClick: () -> Unit) = ui.listRow(
+            "Permission needed", why,
             ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
-            below = ui.button("Allow", Ui.Button.TONAL) { openNotificationAccess() },
-        ))
+            below = ui.button(label, Ui.Button.TONAL) { onClick() },
+        )
+        val notificationAccess = { !PhoneNotificationListener.isGranted(host) }
 
         val notify = card(R.drawable.ic_notifications, "Notifications on PC", "See and reply to this phone's notifications on your PC",
-            storage.featNotify, Features.NOTIFY) { storage.featNotify = it }
-        if (storage.featNotify) {
-            if (!granted) accessPrompt(notify, "Needed to read this phone's notifications")
-            option(notify, "Reply and actions from PC", "Answer messages and tap notification buttons", storage.notifyReply, { storage.notifyReply = it })
-        }
+            Features.NOTIFY, { storage.featNotify }) { storage.featNotify = it }
+        conditional(notify, prompt("Needed to read this phone's notifications", "Allow") { openNotificationAccess() }) { notificationAccess() }
+        option(notify, "Reply and actions from PC", "Answer messages and tap notification buttons", storage.notifyReply) { storage.notifyReply = it }
 
         val battery = card(R.drawable.ic_battery, "Battery sharing", "Your PC's battery here, this phone's on the PC",
-            storage.featBattery, Features.BATTERY) { storage.featBattery = it }
-        if (storage.featBattery) {
-            option(battery, "PC battery alerts", "When the PC is charged to ${storage.batteryFullAt}% or low", storage.batteryAlerts, { storage.batteryAlerts = it })
-            if (storage.batteryAlerts) {
-                val chips = ui.horizontal().apply { setPadding(ui.dp(4), 0, 0, ui.dp(8)) }
-                for (level in listOf(80, 90, 100)) {
-                    chips.addView(ui.filterChip("$level%", storage.batteryFullAt == level).apply {
-                        setOnClickListener {
-                            storage.batteryFullAt = level
-                            changed()
-                        }
-                    }, ui.wrap(if (level == 80) 0 else 8))
+            Features.BATTERY, { storage.featBattery }) { storage.featBattery = it }
+        option(battery, "PC battery alerts", "When the PC is charged or low", storage.batteryAlerts) { storage.batteryAlerts = it }
+        val chips = ui.horizontal().apply { setPadding(ui.dp(4), 0, 0, ui.dp(8)) }
+        val levels = listOf(80, 90, 100).map { level ->
+            ui.filterChip("Charged at $level%", storage.batteryFullAt == level).apply {
+                setOnClickListener {
+                    storage.batteryFullAt = level
+                    SyncEngine.current?.features?.apply()
+                    refresh()
                 }
-                battery.addView(chips)
-            }
+            }.also { chips.addView(it, ui.wrap(if (level == 80) 0 else 8)) }
         }
+        dynamic += { levels.forEachIndexed { i, chip -> chip.isChecked = storage.batteryFullAt == listOf(80, 90, 100)[i] } }
+        conditional(battery, chips) { storage.batteryAlerts }
 
-        card(R.drawable.ic_ring, "Find my phone", "Your PC can ring this phone at full volume, even on silent",
-            storage.featRing, Features.RING) { storage.featRing = it }
+        val ring = card(R.drawable.ic_ring, "Find my phone", "Your PC can ring this phone at full volume, even on silent",
+            Features.RING, { storage.featRing }) { storage.featRing = it }
+        val ringPc = ui.listRow("Ring my PC", "Plays a loud sound on your PC so you can find it", trailing = ui.button("Ring", Ui.Button.TONAL, R.drawable.ic_ring) {
+            val sent = SyncEngine.current?.features?.ringPc() == true
+            android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
+        })
+        conditional(ring, ringPc) { SyncEngine.current?.features?.pc?.value?.canRing == true }
+        val ringHint = ui.supporting("Turn on Find my phone in Midfielder on your PC too, and it can be rung from here").apply {
+            setPadding(ui.dp(4), ui.dp(10), 0, ui.dp(10))
+        }
+        conditional(ring, ringHint) { SyncEngine.current?.features?.pc?.value?.canRing != true }
 
         val music = card(R.drawable.ic_music, "Music control", "Play, pause and skip across your phone and PC",
-            storage.featMedia, Features.MEDIA) { storage.featMedia = it }
-        if (storage.featMedia) {
-            option(music, "Phone music on PC", "In the Windows media controls and media keys", storage.mediaPhoneToPc, { storage.mediaPhoneToPc = it }, access = true)
-            if (storage.mediaPhoneToPc && !granted) accessPrompt(music, "Needed to see what's playing on this phone")
-            option(music, "PC music on phone", "In this phone's media controls and lock screen", storage.mediaPcToPhone, { storage.mediaPcToPhone = it })
+            Features.MEDIA, { storage.featMedia }) { storage.featMedia = it }
+        option(music, "Phone music on PC", "In the Windows media controls and media keys", storage.mediaPhoneToPc) {
+            storage.mediaPhoneToPc = it
+            if (it && notificationAccess()) openNotificationAccess()
         }
+        conditional(music, prompt("Phone music on PC needs notification access", "Allow") { openNotificationAccess() }) {
+            storage.mediaPhoneToPc && notificationAccess()
+        }
+        option(music, "PC music on phone", "In this phone's media controls and lock screen", storage.mediaPcToPhone) { storage.mediaPcToPhone = it }
 
         val audio = card(R.drawable.ic_headphones, "Audio", "Hear this phone on your PC's speakers, or your PC on this phone",
-            storage.featAudio, Features.AUDIO) { storage.featAudio = it }
-        if (storage.featAudio) {
-            option(audio, "Phone audio on PC", "Your PC becomes this phone's Bluetooth speaker. Pair them over Bluetooth once",
-                storage.audioPhoneToPc, { storage.audioPhoneToPc = it })
-            option(audio, "PC audio on phone", "Everything your PC plays, over Wi-Fi", storage.audioPcToPhone, { storage.audioPcToPhone = it })
-        }
+            Features.AUDIO, { storage.featAudio }) { storage.featAudio = it }
+        option(audio, "Phone audio on PC", "Your PC becomes this phone's Bluetooth speaker. Pair them over Bluetooth once", storage.audioPhoneToPc) { storage.audioPhoneToPc = it }
+        option(audio, "PC audio on phone", "Everything your PC plays, over Wi-Fi", storage.audioPcToPhone) { storage.audioPcToPhone = it }
 
         val calls = card(R.drawable.ic_call, "Calls on PC", "See who's calling on your PC, answer or decline from there",
-            storage.featCalls, Features.CALL) { storage.featCalls = it }
-        if (storage.featCalls) {
-            if (dev.midfielder.android.CallBridge.missing(host, storage).isNotEmpty()) grantPrompt(calls, "Phone, call log and the options below need Android's permission")
-            option(calls, "Answer and decline from PC", "Buttons in the PC's call popup", storage.callsActions, { storage.callsActions = it })
-            option(calls, "Contact names and photos", "Looked up on this phone, only for the caller", storage.callsContacts, { storage.callsContacts = it })
-            option(calls, "Quick text reply", "Decline with a message: \"${storage.callsSmsText}\"", storage.callsSms, { storage.callsSms = it })
-            if (storage.callsSms) {
-                calls.addView(ui.button("Edit message", Ui.Button.TEXT) { editSmsText() }, ui.wrap().apply { marginStart = ui.dp(4) })
-            }
+            Features.CALL, { storage.featCalls }) { storage.featCalls = it }
+        conditional(calls, prompt("Phone and call log access shows who's calling", "Grant") { grant() }) {
+            dev.midfielder.android.CallBridge.missing(host, storage).isNotEmpty()
         }
+        option(calls, "Answer and decline from PC", "Buttons in the PC's call popup", storage.callsActions,
+            { listOf(android.Manifest.permission.ANSWER_PHONE_CALLS) }) { storage.callsActions = it }
+        option(calls, "Contact names and photos", "Looked up on this phone, only for the caller", storage.callsContacts,
+            { listOf(android.Manifest.permission.READ_CONTACTS) }) { storage.callsContacts = it }
+        option(calls, "Quick text reply", "Decline with a short message from the PC", storage.callsSms,
+            { listOf(android.Manifest.permission.SEND_SMS) }) { storage.callsSms = it }
+        val smsText = ui.supporting(storage.callsSmsText)
+        val sms = ui.horizontal().apply { setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(8)) }
+        sms.addView(ui.vertical().apply {
+            addView(ui.text("Message", com.google.android.material.R.style.TextAppearance_Material3_BodyLarge, ui.onSurface))
+            addView(smsText)
+        }, ui.weight())
+        sms.addView(ui.button("Edit", Ui.Button.TEXT) { editSmsText() }, ui.wrap(8))
+        conditional(calls, sms) { storage.callsSms }
+        dynamic += { smsText.text = storage.callsSmsText }
 
         val lock = card(R.drawable.ic_lock, "Lock PC when I walk away", "A tiny Bluetooth signal tells your PC you're near; it locks when you leave",
-            storage.featPresence, Features.PRESENCE) { storage.featPresence = it }
-        if (storage.featPresence) {
-            val beacon = SyncEngine.current?.features?.beacon
-            val text = when {
-                !dev.midfielder.android.PresenceBeacon.canAdvertise(host) -> null
-                pc?.presenceReady != true -> "Waiting for your PC: turn on the same feature in Midfielder on the PC"
-                beacon?.problem != null -> beacon.problem
+            Features.PRESENCE, { storage.featPresence }) { storage.featPresence = it }
+        conditional(lock, prompt("\"Nearby devices\" lets Midfielder send the Bluetooth signal", "Grant") { grant() }) {
+            !dev.midfielder.android.PresenceBeacon.canAdvertise(host)
+        }
+        val beaconState = ui.supporting("").apply { setPadding(ui.dp(4), ui.dp(10), 0, ui.dp(10)) }
+        conditional(lock, beaconState) { dev.midfielder.android.PresenceBeacon.canAdvertise(host) }
+        dynamic += {
+            val f = SyncEngine.current?.features
+            val problem = f?.beacon?.problem
+            beaconState.text = when {
+                f == null || !f.pc.value.presenceReady -> "Waiting for your PC: turn on the same feature in Midfielder on the PC"
+                problem != null -> problem
                 else -> "Beacon on. Set how far is \"away\" on your PC"
             }
-            if (text == null) grantPrompt(lock, "\"Nearby devices\" lets Midfielder send the Bluetooth signal")
-            else lock.addView(ui.supporting(text).apply { setPadding(ui.dp(4), ui.dp(8), 0, ui.dp(12)) })
+        }
+        refresh(animate = false)
+    }
+
+    /** Updates status lines, prompts and option visibility in place (never rebuilds). */
+    private fun refresh(animate: Boolean = true) {
+        if (!::featuresBox.isInitialized || cards.isEmpty()) return
+        if (animate && ::pageRoot.isInitialized) {
+            android.transition.TransitionManager.beginDelayedTransition(
+                pageRoot,
+                android.transition.TransitionSet()
+                    .addTransition(android.transition.ChangeBounds())
+                    .addTransition(android.transition.Fade())
+                    .setOrdering(android.transition.TransitionSet.ORDERING_TOGETHER)
+                    .setDuration(180),
+            )
+        }
+        dynamic.forEach { it() }
+        val pc = SyncEngine.current?.features?.pc?.value
+        for (c in cards) {
+            val on = c.isOn()
+            val (text, color) = when {
+                !on -> "Off" to ui.onSurfaceVariant
+                pc == null || pc.name == null -> "On · works when your PC is connected" to ui.onSurfaceVariant
+                c.capability !in pc.capabilities -> "Turn it on in Midfielder on your PC too" to ui.errorColor
+                else -> "On · working with ${pc.name}" to ui.primary
+            }
+            if (c.status.text != text) c.status.text = text
+            c.status.setTextColor(color)
+            c.showOptions()
+        }
+    }
+
+    /** A feature switch was flipped: apply it, ask for what it needs now (only when turned on), update in place. */
+    private fun onFeatureSwitched(card: FeatureCard, on: Boolean) {
+        SyncEngine.current?.features?.apply()
+        if (on) {
+            when (card.capability) {
+                Features.NOTIFY -> if (!PhoneNotificationListener.isGranted(host)) openNotificationAccess()
+                Features.MEDIA -> if (storage.mediaPhoneToPc && !PhoneNotificationListener.isGranted(host)) openNotificationAccess()
+                Features.CALL -> ask(dev.midfielder.android.CallBridge.missing(host, storage))
+                Features.PRESENCE -> ask(dev.midfielder.android.PresenceBeacon.permissions)
+            }
+        }
+        refresh()
+    }
+
+    private fun optionChanged(needs: List<String>) {
+        SyncEngine.current?.features?.apply()
+        ask(needs)
+        refresh()
+    }
+
+    /** Asks for the [permissions] still missing; nothing if all are granted. */
+    private fun ask(permissions: List<String>) {
+        val missing = permissions.filterNot { dev.midfielder.android.CallBridge.granted(host, it) }
+        if (missing.isEmpty()) return
+        storage.prefs.edit().putBoolean("asked_permissions", true).apply()
+        host.requestPermissions(missing.toTypedArray(), dev.midfielder.android.MainActivity.REQ_FEATURES)
+    }
+
+    /**
+     * The Grant button: asks again, or, once Android has stopped showing the prompt ("don't ask again"), opens
+     * Midfielder's page in Android settings where the permission can be turned on.
+     */
+    private fun grant() {
+        val missing = runtimePermissionsMissing()
+        if (missing.isEmpty()) return
+        val blocked = storage.prefs.getBoolean("asked_permissions", false) && missing.none { host.shouldShowRequestPermissionRationale(it) }
+        if (blocked) {
+            runCatching {
+                host.startActivity(
+                    android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", host.packageName, null)),
+                )
+            }
+        } else {
+            ask(missing)
         }
     }
 
@@ -240,7 +351,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
     /** A permission answer came back: start what can start now and redraw. */
     fun onPermissionsResult() {
         SyncEngine.current?.features?.apply()
-        renderFeatures()
+        refresh()
     }
 
     private fun editSmsText() {
@@ -259,7 +370,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                 val t = input.text.toString().trim()
                 if (t.isNotEmpty()) storage.callsSmsText = t
                 SyncEngine.current?.features?.apply()
-                renderFeatures()
+                refresh()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -280,7 +391,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
     }
 
     fun renderChecklist() {
-        renderFeatures()
+        refresh(animate = false) // permissions or notification access may have changed
         if (!::checklist.isInitialized) return
         checklist.removeAllViews()
         Setup.steps(host).forEachIndexed { i, step ->
