@@ -84,6 +84,12 @@ internal static class Shell
         using var _ = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     }
 
+    /// <summary>Opens a URI with its registered handler (ms-settings:, https:).</summary>
+    public static void OpenUri(string uri)
+    {
+        using var _ = Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
+    }
+
     public static void Reveal(string file)
     {
         using var _ = Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{file}\"") { UseShellExecute = true });

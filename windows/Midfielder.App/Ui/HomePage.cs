@@ -30,6 +30,8 @@ internal sealed class HomePage : PageBase
     private readonly ThumbnailCache _thumbs;
     private readonly TextBlock _battery = Fx.Caption("");
     private readonly Fluent.Button _ring;
+    private readonly Fluent.Button _phoneAudio;
+    private readonly Fluent.Button _pcAudio;
     private readonly Border _mediaCard;
     private readonly TextBlock _mediaTitle = Fx.Text("", 15, FontWeights.SemiBold);
     private readonly TextBlock _mediaArtist = Fx.Caption("");
@@ -63,11 +65,13 @@ internal sealed class HomePage : PageBase
         {
             if (Host.RingPhone()) Window.Toast("Ringing your phone");
         });
+        _phoneAudio = Fx.Secondary("Phone audio here", Fluent.SymbolRegular.HeadphonesSoundWave24, () => _ = TogglePhoneAudio());
+        _pcAudio = Fx.Secondary("Play on phone", Fluent.SymbolRegular.PhoneSpeaker24, TogglePcAudio);
         Add(Fx.Wrap(10,
             Fx.Primary("Send files…", Fluent.SymbolRegular.ArrowUpload24, Host.PickAndSendFiles),
             Fx.Secondary("Send clipboard now", Fluent.SymbolRegular.ClipboardPaste24, Host.SendClipboardNow),
             Fx.Secondary("Received files", Fluent.SymbolRegular.FolderOpen24, () => Shell.OpenFolder(Host.Settings.ReceiveFolder)),
-            _ring), 16);
+            _ring, _phoneAudio, _pcAudio), 16);
 
         // Drop zone
         Add(DropZone(), 6);
@@ -230,6 +234,14 @@ internal sealed class HomePage : PageBase
             _battery.Visibility = Visibility.Collapsed;
         }
         _ring.Visibility = f.Ring && phone.CanRing ? Visibility.Visible : Visibility.Collapsed;
+        var audio = Host.Audio;
+        _phoneAudio.Visibility = f.Audio && f.AudioPhoneToPc ? Visibility.Visible : Visibility.Collapsed;
+        _phoneAudio.Content = audio.Connecting ? "Connecting…" : audio.PhoneAudioOn is not null ? "Stop phone audio" : "Phone audio here";
+        _phoneAudio.Appearance = audio.PhoneAudioOn is not null ? Fluent.ControlAppearance.Primary : Fluent.ControlAppearance.Secondary;
+        _pcAudio.Visibility = f.Audio && f.AudioPcToPhone && phone.Capabilities.Contains(Midfielder.Core.Feature.Features.Audio)
+            ? Visibility.Visible : Visibility.Collapsed;
+        _pcAudio.Content = audio.PcAudioOnPhone ? "Stop playing on phone" : "Play on phone";
+        _pcAudio.Appearance = audio.PcAudioOnPhone ? Fluent.ControlAppearance.Primary : Fluent.ControlAppearance.Secondary;
 
         if (phone.Media is { Active: true } m)
         {
@@ -252,6 +264,32 @@ internal sealed class HomePage : PageBase
         _notifyCard.Visibility = f.Notify && phone.Notifications.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         _notifyRows.Children.Clear();
         foreach (var n in phone.Notifications.Take(5)) Fx.Add(_notifyRows, NotificationRow(n), 10);
+    }
+
+    private async Task TogglePhoneAudio()
+    {
+        if (Host.Audio.PhoneAudioOn is not null)
+        {
+            Host.StopPhoneAudio();
+            return;
+        }
+        string? problem = await Host.PlayPhoneAudioAsync();
+        if (Disposed) return;
+        Window.Toast(problem ?? "Your phone's sound now plays on this PC");
+        RenderPhone();
+    }
+
+    private void TogglePcAudio()
+    {
+        if (Host.Audio.PcAudioOnPhone)
+        {
+            Host.StopPcAudioOnPhone();
+        }
+        else
+        {
+            Window.Toast(Host.PlayPcAudioOnPhone() ?? "This PC's sound now plays on your phone");
+        }
+        RenderPhone();
     }
 
     private UIElement NotificationRow(Continuity.PhoneNotification n)

@@ -51,6 +51,19 @@ internal interface IAppHost
     bool RingPhone();
 
     void SendMediaCommand(MediaAction action);
+
+    /// <summary>Audio routes: Bluetooth devices, the phone's sound on this PC, this PC's sound on the phone.</summary>
+    AudioStatus Audio { get; }
+
+    /// <summary>The phone's sound through this PC (Bluetooth). Null when playing, else a message for the user.</summary>
+    Task<string?> PlayPhoneAudioAsync();
+
+    void StopPhoneAudio();
+
+    /// <summary>This PC's sound on the phone (Wi-Fi). Null when started, else a message for the user.</summary>
+    string? PlayPcAudioOnPhone();
+
+    void StopPcAudioOnPhone();
     void ReplyToNotification(string key, string text);
     void DismissNotification(string key);
 

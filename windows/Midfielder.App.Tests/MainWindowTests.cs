@@ -258,7 +258,7 @@ public sealed partial class MainWindowTests : IDisposable
         {
             _empty = empty;
             Settings = new Settings { ReceiveFolder = dir };
-            if (!empty) Settings.Features = new FeatureSettings { Notify = true, Battery = true, Ring = true, Media = true };
+            if (!empty) Settings.Features = new FeatureSettings { Notify = true, Battery = true, Ring = true, Media = true, Audio = true };
             History = new HistoryStore(null);
             if (empty) return;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -335,7 +335,7 @@ public sealed partial class MainWindowTests : IDisposable
                 new PhoneNotification("n1", "WhatsApp", "Mom", "Dinner at 8? Bring the charger you borrowed 🙂", DateTime.Now.AddMinutes(-3), true),
                 new PhoneNotification("n2", "Gmail", "Your boarding pass", "Flight 6E 2134 · Gate 14 · Boarding 18:40", DateTime.Now.AddMinutes(-41), false),
             ],
-            new HashSet<string> { Features.Notify, Features.Battery, Features.Ring, Features.Media });
+            new HashSet<string> { Features.Notify, Features.Battery, Features.Ring, Features.Media, Features.Audio });
 
 #pragma warning disable CS0067 // never raised in the fake
         public event Action? PhoneChanged;
@@ -343,6 +343,11 @@ public sealed partial class MainWindowTests : IDisposable
         public void ApplyFeatures() { }
         public bool RingPhone() => true;
         public void SendMediaCommand(MediaAction action) { }
+        public AudioStatus Audio => _empty ? AudioStatus.Empty : new AudioStatus([new BluetoothAudioSource("bt1", "Realme P3 Ultra")], null, false, false);
+        public Task<string?> PlayPhoneAudioAsync() => Task.FromResult<string?>(null);
+        public void StopPhoneAudio() { }
+        public string? PlayPcAudioOnPhone() => null;
+        public void StopPcAudioOnPhone() { }
         public void ReplyToNotification(string key, string text) { }
         public void DismissNotification(string key) { }
 

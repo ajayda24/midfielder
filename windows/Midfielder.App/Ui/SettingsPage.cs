@@ -133,11 +133,47 @@ internal sealed class SettingsPage : PageBase
             .OptionToggle("Phone music on this PC", "In the Windows media controls, with album art and media keys", f.MediaPhoneToPc, Save(v => f.MediaPhoneToPc = v))
             .OptionToggle("This PC's music on the phone", "In the phone's media controls and on its lock screen", f.MediaPcToPhone, Save(v => f.MediaPcToPhone = v));
 
+        _btDevices = new ComboBox { MinWidth = 180, DisplayMemberPath = nameof(Continuity.BluetoothAudioSource.Name) };
+        System.Windows.Automation.AutomationProperties.SetName(_btDevices, "Phone for Bluetooth audio");
+        _btDevices.SelectionChanged += (_, _) =>
+        {
+            if (_btDevices.SelectedItem is Continuity.BluetoothAudioSource d && d.Id != f.AudioBluetoothId)
+            {
+                f.AudioBluetoothId = d.Id;
+                Host.SaveSettings();
+            }
+        };
+        _btHint = Fx.Secondary("Bluetooth settings", Fluent.SymbolRegular.Bluetooth24, () => Shell.OpenUri("ms-settings:bluetooth"));
+        Card(Fluent.SymbolRegular.HeadphonesSoundWave24, "Audio", "Play your phone's sound on this PC's speakers, and this PC's sound on your phone",
+                Features.Audio, () => f.Audio, v => f.Audio = v)
+            .OptionToggle("Phone audio on this PC", "This PC becomes your phone's Bluetooth speaker: every app, full quality", f.AudioPhoneToPc, Save(v => f.AudioPhoneToPc = v))
+            .Option("Phone to use", "Pair it with this PC over Bluetooth once, in Windows settings", Fx.Row(8, _btDevices, _btHint))
+            .OptionToggle("This PC's audio on the phone", "Streams over Wi-Fi with a short delay: great for music, not for video", f.AudioPcToPhone, Save(v => f.AudioPcToPhone = v))
+            .OptionToggle("Mute this PC while it plays on the phone", "So the sound only comes from the phone", f.AudioMutePc, Save(v => f.AudioMutePc = v));
+
         RenderFeatureStatus();
+    }
+
+    private ComboBox _btDevices = new();
+    private Fluent.Button _btHint = new();
+
+    private void RenderBluetooth()
+    {
+        var audio = Host.Audio;
+        var selected = Host.Settings.Features.AudioBluetoothId;
+        if (!audio.BluetoothDevices.Select(d => d.Id).SequenceEqual(_btDevices.Items.OfType<Continuity.BluetoothAudioSource>().Select(d => d.Id)))
+        {
+            _btDevices.ItemsSource = audio.BluetoothDevices;
+        }
+        _btDevices.SelectedItem = audio.BluetoothDevices.FirstOrDefault(d => d.Id == selected)
+            ?? audio.BluetoothDevices.FirstOrDefault(d => Host.Phone.Name is { } n && d.Name.Contains(n, StringComparison.OrdinalIgnoreCase));
+        _btDevices.Visibility = audio.BluetoothDevices.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _btHint.Visibility = audio.BluetoothDevices.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void RenderFeatureStatus()
     {
+        RenderBluetooth();
         var phone = Host.Phone;
         bool connected = phone.Name is not null;
         foreach (var (card, capability, on) in _cards)

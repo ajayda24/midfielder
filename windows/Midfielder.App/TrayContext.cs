@@ -751,6 +751,16 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
 
     void IAppHost.SendMediaCommand(MediaAction action) => _features.SendMediaCommand(action);
 
+    AudioStatus IAppHost.Audio => _features.Audio;
+
+    Task<string?> IAppHost.PlayPhoneAudioAsync() => _features.PlayPhoneAudioAsync();
+
+    void IAppHost.StopPhoneAudio() => _features.StopPhoneAudio();
+
+    string? IAppHost.PlayPcAudioOnPhone() => _features.PlayPcAudioOnPhone();
+
+    void IAppHost.StopPcAudioOnPhone() => _features.StopPcAudio("stopped on this PC");
+
     void IAppHost.ReplyToNotification(string key, string text) => _features.Reply(key, text);
 
     void IAppHost.DismissNotification(string key) => _features.Dismiss(key);

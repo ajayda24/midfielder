@@ -24,6 +24,16 @@ internal sealed record PhoneState(
     public bool HasMedia => Media is { Active: true };
 }
 
+/// <summary>Audio routes as the UI shows them.</summary>
+internal sealed record AudioStatus(
+    IReadOnlyList<BluetoothAudioSource> BluetoothDevices,
+    BluetoothAudioSource? PhoneAudioOn,
+    bool Connecting,
+    bool PcAudioOnPhone)
+{
+    public static readonly AudioStatus Empty = new([], null, false, false);
+}
+
 /// <summary>
 /// The optional features on the PC: phone notifications as Windows notifications, battery both ways, find my phone /
 /// PC, and music both ways. Each has its own switch in <see cref="FeatureSettings"/>; <see cref="Apply"/> starts what
@@ -48,6 +58,9 @@ internal sealed class PcFeatures : IDisposable
     private BatteryStatus? _phoneBattery;
     private MediaState? _phoneMediaState;
     private BatteryStatus? _lastPcBattery;
+    private readonly PhoneBluetoothAudio _bluetooth;
+    private PcAudioStream? _pcAudio;
+    private IDisposable? _pcAudioHold;
 
     public PcFeatures(MidfielderNode node, Func<FeatureSettings> settings, SynchronizationContext ui, Action<string?> showMain)
     {
@@ -56,7 +69,11 @@ internal sealed class PcFeatures : IDisposable
         _ui = ui;
         _showMain = showMain;
         _toasts.Activated += (args, input) => _ui.Post(_ => OnToast(args, input), null);
+        _bluetooth = new PhoneBluetoothAudio(ui);
+        _bluetooth.Changed += Refresh;
     }
+
+    public AudioStatus Audio => new(_bluetooth.Devices, _bluetooth.Connected, _bluetooth.IsConnecting, _pcAudio is not null);
 
     /// <summary>Phone state changed (battery, music, notifications, capabilities). Raised on the UI thread.</summary>
     public event Action? Changed;
@@ -83,6 +100,8 @@ internal sealed class PcFeatures : IDisposable
             _node.SendFeature(Features.Media, new Envelope { MediaState = new MediaState { Active = false } });
         }
         if (!s.Ring) StopRinging();
+        if (s.Audio && s.AudioPhoneToPc) _bluetooth.StartWatching(); else _bluetooth.StopWatching();
+        if (!(s.Audio && s.AudioPcToPhone)) StopPcAudio("switched off");
         _alerts.FullAt = s.BatteryFullAt;
         _node.SetFeatures(Enabled());
         Refresh();
@@ -95,6 +114,7 @@ internal sealed class PcFeatures : IDisposable
         if (s.Battery) yield return Features.Battery;
         if (s.Ring) yield return Features.Ring;
         if (s.Media) yield return Features.Media;
+        if (s.Audio) yield return Features.Audio;
     }
 
     public void OnPeerConnected(PeerSession session)
@@ -110,6 +130,7 @@ internal sealed class PcFeatures : IDisposable
         {
             ClearPhoneMedia();
             _phoneBattery = null;
+            StopPcAudio("phone disconnected");
         }
         Refresh();
     }
@@ -144,6 +165,12 @@ internal sealed class PcFeatures : IDisposable
                 break;
             case Envelope.BodyOneofCase.MediaCommand when s.Media && s.MediaPcToPhone:
                 _ = _pcMedia?.CommandAsync(env.MediaCommand);
+                break;
+            case Envelope.BodyOneofCase.AudioRequest when s.Audio:
+                OnAudioRequest(from, env.AudioRequest);
+                break;
+            case Envelope.BodyOneofCase.AudioStop when _pcAudio is not null && env.AudioStop.StreamId == _pcAudio.StreamId:
+                StopPcAudio("stopped on the phone", tellPhone: false);
                 break;
             default:
                 return;
@@ -288,6 +315,92 @@ internal sealed class PcFeatures : IDisposable
         }
     }
 
+    // ---- Audio -------------------------------------------------------------------------------------
+
+    private void OnAudioRequest(PeerSession from, AudioRequest r)
+    {
+        switch (r.Route)
+        {
+            case AudioRoute.PhoneToPc:
+                if (r.Start) _ = PlayPhoneAudioAsync(); else _bluetooth.Disconnect();
+                break;
+            case AudioRoute.PcToPhone:
+                if (r.Start) PlayPcAudioOnPhone(); else StopPcAudio("stopped on the phone");
+                break;
+        }
+    }
+
+    /// <summary>The phone's sound through this PC (Bluetooth). Returns null when playing, else why not.</summary>
+    public async Task<string?> PlayPhoneAudioAsync()
+    {
+        var s = S;
+        if (!(s.Audio && s.AudioPhoneToPc)) return "Turn on Audio → Phone audio on this PC in Settings first.";
+        _bluetooth.StartWatching();
+        var device = _bluetooth.Pick(s.AudioBluetoothId, Phone.Name);
+        if (device is null)
+        {
+            // The watcher may still be enumerating right after it started.
+            await Task.Delay(1500).ConfigureAwait(true);
+            device = _bluetooth.Pick(s.AudioBluetoothId, Phone.Name);
+        }
+        if (device is null)
+        {
+            return _bluetooth.Devices.Count == 0
+                ? "Pair your phone with this PC over Bluetooth first (Windows Settings → Bluetooth & devices)."
+                : "Choose your phone in Settings → Features → Audio.";
+        }
+        return await _bluetooth.ConnectAsync(device).ConfigureAwait(true);
+    }
+
+    public void StopPhoneAudio() => _bluetooth.Disconnect();
+
+    /// <summary>This PC's sound on the phone (Wi-Fi). Returns null when started, else why not.</summary>
+    public string? PlayPcAudioOnPhone()
+    {
+        var s = S;
+        if (!(s.Audio && s.AudioPcToPhone)) return "Turn on Audio → This PC's audio on the phone in Settings first.";
+        if (_pcAudio is not null) return null;
+        var peers = _node.ConnectedPeers;
+        var session = peers.Count > 0 ? _node.Session(peers[0].Fingerprint) : null;
+        if (session is null) return "Your phone isn't connected.";
+        if (!session.Has(Features.Audio)) return "Turn on Audio in Midfielder on your phone too.";
+        try
+        {
+            var stream = new PcAudioStream(MidfielderNode.NewTransferId(), s.AudioMutePc);
+            stream.Ended += () => _ui.Post(_ =>
+            {
+                if (ReferenceEquals(_pcAudio, stream)) StopPcAudio("stream ended");
+            }, null);
+            _pcAudio = stream;
+            _pcAudioHold = Performance.Hold();
+            _node.ServeStream(session.Peer.Fingerprint, stream.StreamId, stream.WriteAsync);
+            session.TrySend(new Envelope { AudioOffer = new AudioOffer { StreamId = stream.StreamId, SampleRate = (uint)stream.SampleRate, Channels = 2 } });
+            AppLog.Info($"Playing this PC's audio on {session.Peer.Name} ({stream.SampleRate} Hz)");
+            Refresh();
+            return null;
+        }
+        catch (Exception e)
+        {
+            AppLog.Error("Couldn't capture this PC's audio", e);
+            StopPcAudio("failed");
+            return "Couldn't capture this PC's sound: " + e.Message;
+        }
+    }
+
+    public void StopPcAudio(string reason, bool tellPhone = true)
+    {
+        var stream = _pcAudio;
+        if (stream is null) return;
+        _pcAudio = null;
+        _node.StopServing(stream.StreamId);
+        if (tellPhone) _node.SendFeature(Features.Audio, new Envelope { AudioStop = new AudioStop { StreamId = stream.StreamId, Reason = reason } });
+        stream.Dispose();
+        _pcAudioHold?.Dispose();
+        _pcAudioHold = null;
+        AppLog.Info($"Stopped playing this PC's audio on the phone ({reason})");
+        Refresh();
+    }
+
     // ---- Ring and media -----------------------------------------------------------------------------
 
     private void StartRinging(string phoneName)
@@ -337,6 +450,8 @@ internal sealed class PcFeatures : IDisposable
 
     public void Dispose()
     {
+        StopPcAudio("closing");
+        _bluetooth.Dispose();
         StopBattery();
         _pcMedia?.Dispose();
         _phoneMedia?.Dispose();

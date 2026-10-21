@@ -126,6 +126,21 @@ internal sealed class FeatureSettings
 
     /// <summary>This PC's music in the phone's media controls.</summary>
     public bool MediaPcToPhone { get; set; } = true;
+
+    /// <summary>Audio streaming (master switch).</summary>
+    public bool Audio { get; set; }
+
+    /// <summary>The phone's sound through this PC's speakers (this PC as its Bluetooth speaker).</summary>
+    public bool AudioPhoneToPc { get; set; } = true;
+
+    /// <summary>This PC's sound on the phone (over Wi-Fi).</summary>
+    public bool AudioPcToPhone { get; set; } = true;
+
+    /// <summary>Mute this PC's speakers while its sound plays on the phone.</summary>
+    public bool AudioMutePc { get; set; }
+
+    /// <summary>The Bluetooth device to use for the phone's sound; null picks the one named like the phone.</summary>
+    public string? AudioBluetoothId { get; set; }
 }
 
 internal sealed record StoredDevice(string Fingerprint, string Name, int Kind, string? LastAddress);
