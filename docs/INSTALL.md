@@ -7,7 +7,7 @@ You need: a Windows 10/11 PC and an Android 10+ phone **on the same Wi-Fi networ
 
 1. Open the repository on GitHub → **Actions** tab → click the latest run of **CI** with a green check ✅.
 2. Scroll to **Artifacts** and download:
-   * `midfielder-windows`: contains `Midfielder.exe`
+   * `midfielder-windows`: contains `Midfielder.exe` and `MidfielderShell.dll`
    * `midfielder-android`: contains the APK
 
    Both download as `.zip` files. Unzip them. (You must be signed in to GitHub to download artifacts.)
@@ -15,9 +15,8 @@ You need: a Windows 10/11 PC and an Android 10+ phone **on the same Wi-Fi networ
 ## 2. Windows laptop
 
 1. Create a folder that will stay put, e.g. `C:\Users\<you>\AppData\Local\Programs\Midfielder`, and move
-   **all the files** from the download there (`Midfielder.exe`, `MidfielderShell.dll`, `Midfielder.msix`,
-   `midfielder-sideload.cer`; keep them together). Midfielder sets itself to start with Windows from that location, so don't run
-   it from Downloads.
+   **both files** from the download there (`Midfielder.exe` and `MidfielderShell.dll`; keep them together).
+   Midfielder sets itself to start with Windows from that location, so don't run it from Downloads.
 2. Double-click `Midfielder.exe`.
    * **"Windows protected your PC"** (SmartScreen): click **More info → Run anyway**. The app isn't
      code-signed yet.
@@ -33,7 +32,9 @@ No .NET or anything else to install: the exe is self-contained.
 **Optional: "Send to phone" at the top of the Windows 11 right-click menu.** Midfielder window → **Settings →
 "Send to phone" in the Windows 11 right-click menu** → turn it on. Windows asks once (UAC prompt) to trust
 Midfielder's certificate; after that, right-click any file or folder in Explorer → **Send to phone**, with no
-"Show more options". If you move the Midfielder folder later, the app re-registers itself on its next start.
+"Show more options". There is nothing to install by hand: the package for this menu is built into
+`Midfielder.exe` (earlier builds shipped a loose `Midfielder.msix`; double-clicking it only shows a certificate
+error, so delete it). If you move the Midfielder folder later, the app re-registers itself on its next start.
 To undo it, turn the switch off. The certificate can be removed in `certlm.msc` → Trusted People.
 
 ## 3. Android phone

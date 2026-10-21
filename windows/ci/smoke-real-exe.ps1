@@ -47,7 +47,14 @@ try {
     Start-Sleep -Seconds $WaitSeconds
     $proc.Refresh()
     if ($proc.HasExited) { throw "Midfielder.exe exited early (code $($proc.ExitCode))" }
-    if (-not $proc.Responding) { $problems += 'the process is not responding' }
+    if (-not $proc.Responding) {
+        $problems += 'the process is not responding'
+        # Where is the UI thread stuck? Managed stacks of every thread (works on single-file, self-contained).
+        dotnet tool install --global dotnet-stack 2>&1 | Out-Null
+        $stack = Join-Path $env:USERPROFILE '.dotnet\tools\dotnet-stack.exe'
+        if (Test-Path $stack) { Write-Host '--- managed stacks ---'; & $stack report --process-id $proc.Id }
+        else { Write-Host 'dotnet-stack could not be installed' }
+    }
 
     $windows = [Win]::Windows([uint32]$proc.Id)
     if ($windows.Count -eq 0) { $problems += 'no visible window' }
@@ -83,7 +90,14 @@ try {
 finally {
     if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
     $log = Join-Path $env:LOCALAPPDATA 'Midfielder\midfielder.log'
-    if (Test-Path $log) { Write-Host '--- midfielder.log (tail) ---'; Get-Content $log -Tail 40 }
+    if (Test-Path $log) {
+        $lines = Get-Content $log
+        $start = ($lines | Select-String -SimpleMatch 'Midfielder starting' | Select-Object -Last 1).LineNumber
+        $run = if ($start) { $lines[($start - 1)..($lines.Count - 1)] } else { $lines }
+        Write-Host '--- midfielder.log (this run) ---'; $run | Select-Object -Last 60 | Write-Host
+        if (-not ($run -match 'Main window rendered')) { $problems += 'the log never says "Main window rendered"' }
+    }
+    else { $problems += 'no log file' }
 }
 if ($problems.Count -gt 0) { throw ('Real exe check failed: ' + ($problems -join '; ')) }
 Write-Host 'Real exe check passed.'

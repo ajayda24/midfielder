@@ -19,9 +19,70 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        Crash.Install();
+        // WPF's dispatcher is the message loop: it runs the Fluent windows natively and pumps the WinForms
+        // tray icon, menu, timers and clipboard listener (all plain window messages) on the same thread.
+        var app = Ui.WpfApp.Create();
+        Crash.Watch(app);
         using var context = new TrayContext(args);
-        Application.Run(context);
+        context.ThreadExit += (_, _) => app.Shutdown();
+        app.Run();
         return 0;
+    }
+}
+
+/// <summary>
+/// Last-resort error handling: everything is logged, the user gets one short message, and a window that keeps
+/// failing is closed so the tray (clipboard sync, transfers) carries on.
+/// </summary>
+internal static class Crash
+{
+    private static long s_lastShownMs = -60_000;
+    private static int s_recent;
+    private static long s_windowStartMs;
+
+    public static void Install()
+    {
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            AppLog.Error("Unhandled exception, Midfielder is closing", e.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            AppLog.Error("Unobserved task exception", e.Exception);
+            e.SetObserved();
+        };
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => Report(e.Exception);
+    }
+
+    public static void Watch(System.Windows.Application app) => app.DispatcherUnhandledException += (_, e) =>
+    {
+        e.Handled = true;
+        Report(e.Exception);
+    };
+
+    private static void Report(Exception e)
+    {
+        AppLog.Error("Unexpected error", e);
+        long now = Environment.TickCount64;
+        if (now - s_windowStartMs > 10_000)
+        {
+            s_windowStartMs = now;
+            s_recent = 0;
+        }
+        // The same error over and over (e.g. on every layout pass): close the windows, keep the tray.
+        if (++s_recent >= 3)
+        {
+            foreach (var w in System.Windows.Application.Current?.Windows.OfType<System.Windows.Window>().ToList() ?? [])
+            {
+                try { w.Close(); } catch (InvalidOperationException) { }
+            }
+        }
+        if (now - s_lastShownMs < 60_000) return;
+        s_lastShownMs = now;
+        MessageBox.Show(
+            $"Midfielder hit an error: {e.Message}\n\nClipboard sync keeps running. Details are in the log " +
+            $"(Settings → Developer → Open log file):\n{AppLog.Path}",
+            "Midfielder", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 }
 

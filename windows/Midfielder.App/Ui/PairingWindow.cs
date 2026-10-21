@@ -68,7 +68,6 @@ internal sealed class PairingWindow : Fluent.FluentWindow
         Tick(countdown);
         _timer.Start();
         Loaded += (_, _) => Anim.Enter(body);
-        System.Windows.Forms.Integration.ElementHost.EnableModelessKeyboardInterop(this);
     }
 
     private void Tick(TextBlock countdown)

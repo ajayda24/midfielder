@@ -33,6 +33,10 @@ internal sealed class MainWindow : Fluent.FluentWindow
         Height = 740;
         MinWidth = 680;
         MinHeight = 500;
+        // Never larger than the screen (a small laptop at 150% has well under 1100x740 to offer).
+        var area = SystemParameters.WorkArea;
+        Width = Math.Min(Width, Math.Max(MinWidth, area.Width * 0.92));
+        Height = Math.Min(Height, Math.Max(MinHeight, area.Height * 0.92));
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         WindowBackdropType = Fluent.WindowBackdropType.Mica;
         WindowCornerPreference = Fluent.WindowCornerPreference.Round;
@@ -84,8 +88,8 @@ internal sealed class MainWindow : Fluent.FluentWindow
         _host.StatusChanged += OnStatus;
         UpdateStatus();
         ShowPage(page);
-        // Keyboard input works when shown from the tray's WinForms message loop.
-        System.Windows.Forms.Integration.ElementHost.EnableModelessKeyboardInterop(this);
+        AppLog.Info("Main window created");
+        ContentRendered += (_, _) => AppLog.Info("Main window rendered");
     }
 
     public string CurrentPage { get; private set; } = "";
@@ -179,23 +183,26 @@ internal sealed class MainWindow : Fluent.FluentWindow
 
     private void RestoreSavedBounds()
     {
-        var saved = _host.Settings.Window;
+        var saved = _host.Settings.WindowBounds;
         if (saved is null || saved.Length != 5) return;
-        var r = new Rect(saved[0], saved[1], Math.Max(saved[2], MinWidth), Math.Max(saved[3], MinHeight));
+        var area = SystemParameters.WorkArea;
+        double w = Math.Clamp(saved[2], MinWidth, Math.Max(MinWidth, area.Width));
+        double h = Math.Clamp(saved[3], MinHeight, Math.Max(MinHeight, area.Height));
         var screen = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
-        if (!screen.IntersectsWith(r)) return;
+        // The title bar must be on a screen that is still there; otherwise open centered as usual.
+        if (!screen.Contains(new Point(saved[0] + 40, saved[1] + 16)) || !screen.Contains(new Point(saved[0] + w - 40, saved[1] + 16))) return;
         WindowStartupLocation = WindowStartupLocation.Manual;
-        Left = r.X;
-        Top = r.Y;
-        Width = r.Width;
-        Height = r.Height;
+        Left = saved[0];
+        Top = Math.Max(screen.Top, Math.Min(saved[1], screen.Bottom - h));
+        Width = w;
+        Height = h;
         if (saved[4] == 1) WindowState = WindowState.Maximized;
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         var r = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
-        _host.Settings.Window = [(int)r.X, (int)r.Y, (int)r.Width, (int)r.Height, WindowState == WindowState.Maximized ? 1 : 0];
+        _host.Settings.WindowBounds = [(int)r.X, (int)r.Y, (int)r.Width, (int)r.Height, WindowState == WindowState.Maximized ? 1 : 0];
         _host.SaveSettings();
         base.OnClosing(e);
     }

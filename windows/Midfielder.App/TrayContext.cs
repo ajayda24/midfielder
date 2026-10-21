@@ -137,6 +137,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
 
         UpdateStatus();
         NativeMethods.SetEfficiencyMode(true);
+        AppLog.Info("Tray ready");
         if (!args.Contains("--background") && !SendArgs.IsSend(args))
         {
             ShowMain();
@@ -179,10 +180,12 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             _mainForm.Activate();
             return;
         }
+        AppLog.Info("Creating main window");
         _mainForm = new MainWindow(this, page ?? MainWindow.HomeName);
         _mainForm.Closed += (_, _) => _mainForm = null;
         _mainForm.Show();
         _mainForm.Activate();
+        AppLog.Info("Main window shown");
     }
 
     private void UpdateStatus()
@@ -220,6 +223,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             _pairingForm.Activate();
             return;
         }
+        AppLog.Info("Opening pairing window");
         var invite = _node.OpenPairing(LanDiscovery.LocalAddresses(_port));
         _pairingForm = new PairingWindow(invite);
         _pairingForm.Closed += (_, _) =>

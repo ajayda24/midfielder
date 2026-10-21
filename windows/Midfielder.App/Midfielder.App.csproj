@@ -38,6 +38,10 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets\midfielder.ico" LogicalName="midfielder.ico" />
+    <!-- Windows 11 menu: the signed sparse package (built by CI, passed as -p:MenuPackage=path) and its
+         certificate. Without MenuPackage the menu switch shows as unavailable. -->
+    <EmbeddedResource Include="..\packaging\midfielder-sideload.cer" LogicalName="menu/midfielder-sideload.cer" />
+    <EmbeddedResource Include="$(MenuPackage)" LogicalName="menu/Midfielder.msix" Condition="'$(MenuPackage)' != ''" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Midfielder.App.Tests" />

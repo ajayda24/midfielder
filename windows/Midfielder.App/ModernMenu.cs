@@ -8,24 +8,42 @@ namespace Midfielder.App;
 
 /// <summary>
 /// The Windows 11 top-level "Send to phone" entry. Explorer only shows top-level entries from apps with package
-/// identity, so Midfielder registers a tiny *sparse* package (Midfielder.msix, next to the exe) whose external
-/// location is the exe's folder; the package declares MidfielderShell.dll as the context-menu handler.
-/// The package is signed with Midfielder's own certificate, which Windows must trust once (one UAC prompt).
+/// identity, so Midfielder registers a tiny *sparse* package whose external location is the exe's folder; the
+/// package declares MidfielderShell.dll (next to the exe) as the context-menu handler. The package and its
+/// certificate are embedded in Midfielder.exe and written to %LOCALAPPDATA%\Midfielder\menu when needed, so
+/// there is nothing for the user to open by hand. Windows must trust the certificate once (one UAC prompt).
 /// </summary>
 internal static class ModernMenu
 {
     public const string PackageName = "Midfielder";
     private const string StateFile = "modern-menu.txt";
+    private const string MsixResource = "menu/Midfielder.msix";
+    private const string CerResource = "menu/midfielder-sideload.cer";
 
     private static string ExeDir => Path.GetDirectoryName(Shell.ExePath)!;
-    private static string Msix => Path.Combine(ExeDir, "Midfielder.msix");
-    private static string Cer => Path.Combine(ExeDir, "midfielder-sideload.cer");
+    private static string DataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Midfielder");
+    private static string Msix => Path.Combine(DataDir, "menu", "Midfielder.msix");
+    private static string Cer => Path.Combine(DataDir, "menu", "midfielder-sideload.cer");
     private static string Handler => Path.Combine(ExeDir, "MidfielderShell.dll");
-    private static string StatePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Midfielder", StateFile);
+    private static string StatePath => Path.Combine(DataDir, StateFile);
 
-    /// <summary>Windows 11 (build 22000+) with the package files next to the exe.</summary>
+    /// <summary>Windows 11 (build 22000+), a build that embeds the package, and the handler next to the exe.</summary>
     public static bool Supported =>
-        Environment.OSVersion.Version.Build >= 22000 && File.Exists(Msix) && File.Exists(Cer) && File.Exists(Handler);
+        Environment.OSVersion.Version.Build >= 22000 && HasResource(MsixResource) && HasResource(CerResource) && File.Exists(Handler);
+
+    private static bool HasResource(string name) => typeof(ModernMenu).Assembly.GetManifestResourceInfo(name) is not null;
+
+    /// <summary>Writes the embedded package and certificate out (fresh each time: they change with each build).</summary>
+    private static void Extract()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Msix)!);
+        foreach (var (resource, path) in new[] { (MsixResource, Msix), (CerResource, Cer) })
+        {
+            using var source = typeof(ModernMenu).Assembly.GetManifestResourceStream(resource)!;
+            using var target = File.Create(path);
+            source.CopyTo(target);
+        }
+    }
 
     public static ModernMenuStatus Status
     {
@@ -42,7 +60,8 @@ internal static class ModernMenu
 
     public static async Task<string> EnableAsync()
     {
-        if (!Supported) return "The Windows 11 menu needs Windows 11 and the files that come with Midfielder.exe.";
+        if (!Supported) return "The Windows 11 menu needs Windows 11, with MidfielderShell.dll next to Midfielder.exe.";
+        Extract();
         if (!IsCertificateTrusted() && !await TrustCertificateAsync().ConfigureAwait(true))
         {
             return "Not turned on: Windows didn't get permission to trust Midfielder's certificate.";
@@ -76,7 +95,9 @@ internal static class ModernMenu
     {
         try
         {
-            if (Status == ModernMenuStatus.NeedsRepair && IsCertificateTrusted())
+            if (Status != ModernMenuStatus.NeedsRepair) return;
+            Extract();
+            if (IsCertificateTrusted())
             {
                 AppLog.Info("Midfielder.exe moved: re-registering the Windows 11 menu entry: " + await EnableAsync().ConfigureAwait(true));
             }
