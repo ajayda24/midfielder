@@ -14,12 +14,18 @@ internal static class WpfApp
     /// <summary>The app-wide WPF Application (Program runs its dispatcher loop); cheap, no theme loaded yet.</summary>
     public static Application Create() => Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
 
+    private static bool _themed;
+
     /// <summary>Loads the Fluent theme the first time a window opens.</summary>
     public static void Ensure()
     {
         Create();
+        // A flag, not a look for the ThemesDictionary: ApplicationThemeManager.Apply swaps it for a plain dictionary,
+        // and merging the theme again restyles open windows ("Cannot change AllowsTransparency after a Window has
+        // been shown"), so the second window never opened.
+        if (_themed) return;
+        _themed = true;
         var resources = Application.Current!.Resources;
-        if (resources.MergedDictionaries.OfType<ThemesDictionary>().Any()) return;
         resources.MergedDictionaries.Add(new ThemesDictionary { Theme = ApplicationTheme.Light });
         resources.MergedDictionaries.Add(new ControlsDictionary());
         ApplicationThemeManager.Apply(ApplicationTheme.Light, Wpf.Ui.Controls.WindowBackdropType.Mica, false);

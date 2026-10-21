@@ -102,6 +102,9 @@ finally {
             Write-Host "Main window first frame: $ms ms"
             if ($ms -gt 3000) { $problems += "the main window took $ms ms to draw its first frame (limit 3000)" }
         }
+        # Any error the app logged on a clean start is a bug (e.g. the pairing window failing to open).
+        $errors = @($run | Select-String -SimpleMatch ' ERROR ')
+        if ($errors.Count -gt 0) { $problems += "the app logged $($errors.Count) error(s): $($errors[0].Line)" }
     }
     else { $problems += 'no log file' }
 }
