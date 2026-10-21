@@ -2,6 +2,7 @@ using System.Net;
 using System.Threading.Channels;
 using Google.Protobuf;
 using Midfielder.Core.Crypto;
+using Midfielder.Core.Feature;
 using Midfielder.Core.Net;
 using Midfielder.Core.Transfer;
 using Midfielder.Protocol;
@@ -39,6 +40,11 @@ public sealed class NodeTests : IAsyncLifetime
                 ? offer.Files.Select((f, i) => (IFileSink)new DirectoryFileSink(inbox, $"{offer.TransferId}-{i}", f.Name)).ToList()
                 : null);
         public void OnTransferFinished(string transferId, PairedDevice from, TransferResult result) => Finished.Writer.TryWrite(result);
+
+        public Channel<Envelope> Features { get; } = Channel.CreateUnbounded<Envelope>();
+        public Channel<PeerSession> Sessions { get; } = Channel.CreateUnbounded<PeerSession>();
+        public void OnFeature(PeerSession from, Envelope env) => Features.Writer.TryWrite(env);
+        public void OnPeerConnected(PeerSession session) => Sessions.Writer.TryWrite(session);
     }
 
     private sealed class Device : IAsyncDisposable
@@ -91,6 +97,55 @@ public sealed class NodeTests : IAsyncLifetime
         var b = new byte[n];
         new Random(n).NextBytes(b);
         return b;
+    }
+
+    [Fact]
+    public async Task FeaturesAreAdvertisedUpdatedLiveAndGateSending()
+    {
+        var (pc, phone, addr) = PcAndPhone();
+        pc.Node.SetFeatures([Features.Battery]); // before connecting: goes out in Hello
+        var phoneSide = await Within(phone.Node.PairAsync(pc.Node.OpenPairing([addr])));
+        var pcSide = await Within(pc.Events.Sessions.Reader.ReadAsync().AsTask());
+
+        Assert.True(phoneSide.Has(Features.Battery));
+        Assert.True(phoneSide.Has("file"));
+        Assert.False(phoneSide.Has(Features.Media));
+        Assert.False(pcSide.Has(Features.Battery));
+
+        var battery = new Envelope { BatteryStatus = new BatteryStatus { Level = 64, Charging = true, Plugged = true } };
+        Assert.Equal(1, phone.Node.SendFeature(Features.Battery, battery));
+        Assert.Equal(0, phone.Node.SendFeature(Features.Media, battery));
+        Assert.Equal(64u, (await Within(pc.Events.Features.Reader.ReadAsync().AsTask())).BatteryStatus.Level);
+
+        phone.Node.SetFeatures([Features.Media, Features.Ring]);
+        var changed = (await Within(pc.Events.Features.Reader.ReadAsync().AsTask())).FeaturesChanged;
+        Assert.Contains(Features.Media, changed.Capabilities);
+        Assert.Contains("file", changed.Capabilities);
+        Assert.True(pcSide.Has(Features.Media) && pcSide.Has(Features.Ring));
+
+        pc.Node.SetFeatures([]);
+        await Until(() => !phoneSide.Has(Features.Battery));
+        Assert.Equal(0, phone.Node.SendFeature(Features.Battery, battery));
+    }
+
+    [Fact]
+    public void BatteryAlertsFireOnceAndRearmWithHysteresis()
+    {
+        var a = new BatteryAlerts(fullAt: 80, lowAt: 15);
+        Assert.Null(a.Update(70, charging: true));
+        Assert.Equal(BatteryAlert.Full, a.Update(80, charging: true));
+        Assert.Null(a.Update(81, charging: true));
+        Assert.Null(a.Update(79, charging: true));
+        Assert.Null(a.Update(80, charging: true));
+        Assert.Null(a.Update(80, charging: false));
+        Assert.Equal(BatteryAlert.Full, a.Update(80, charging: true));
+
+        Assert.Equal(BatteryAlert.Low, a.Update(15, charging: false));
+        Assert.Null(a.Update(14, charging: false));
+        Assert.Null(a.Update(16, charging: false));
+        Assert.Null(a.Update(15, charging: false));
+        Assert.Null(a.Update(21, charging: false));
+        Assert.Equal(BatteryAlert.Low, a.Update(15, charging: false));
     }
 
     [Fact]

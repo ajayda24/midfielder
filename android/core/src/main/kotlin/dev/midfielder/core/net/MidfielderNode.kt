@@ -20,6 +20,7 @@ import dev.midfielder.proto.ClipboardItem
 import dev.midfielder.proto.DataOpen
 import dev.midfielder.proto.DeviceKind
 import dev.midfielder.proto.Envelope
+import dev.midfielder.proto.FeaturesChanged
 import dev.midfielder.proto.FileEntry
 import dev.midfielder.proto.Hello
 import dev.midfielder.proto.PairRequest
@@ -78,6 +79,12 @@ public interface NodeEvents {
     public suspend fun onTransferOffer(from: PairedDevice, offer: TransferOffer): List<FileSink>? = null
     public fun onTransferProgress(transferId: String, transferred: Long, total: Long) {}
     public fun onTransferFinished(transferId: String, from: PairedDevice, result: TransferResult) {}
+
+    /**
+     * An optional-feature message (notifications, battery, ring, media) or a FeaturesChanged update (the
+     * session's [PeerSession.capabilities] are already updated). Runs on the session's reader; keep it short.
+     */
+    public fun onFeature(from: PeerSession, env: Envelope) {}
 }
 
 public sealed class TransferResult {
@@ -233,7 +240,7 @@ public class MidfielderNode(
         }
         writeNow(output, Envelope(hello = myHello()))
         socket.soTimeout = 0
-        val session = startSession(socket, input, output, device, isDialer = false, remote = remote)
+        val session = startSession(socket, input, output, device, isDialer = false, remote = remote, hello.capabilities)
         session.closed.await()
     }
 
@@ -296,7 +303,7 @@ public class MidfielderNode(
             if (invite != null) events.onPaired(device)
             socket.soTimeout = 0
             check(peerHello.protocol_version >= 1)
-            return startSession(socket, input, output, device, isDialer = true, remote = address)
+            return startSession(socket, input, output, device, isDialer = true, remote = address, peerHello.capabilities)
         } catch (e: Throwable) {
             runCatching { socket.close() }
             throw e
@@ -333,8 +340,12 @@ public class MidfielderNode(
         device: PairedDevice,
         isDialer: Boolean,
         remote: HostPort,
+        capabilities: List<String>,
     ): PeerSession {
-        val session = PeerSession(socket, input, output, device, isDialer, remote, config, ::dispatch, scope)
+        val session = PeerSession(
+            socket, input, output, device, isDialer, remote, config, ::dispatch, scope,
+            capabilities.take(MAX_CAPABILITIES).toSet(),
+        )
         sessions.put(device.fingerprint, session)?.close(IOException("replaced by a new connection"))
         publishConnected()
         session.start()
@@ -371,9 +382,51 @@ public class MidfielderNode(
             }
             env.transfer_answer != null -> pendingAnswers[env.transfer_answer.transfer_id]?.complete(env.transfer_answer)
             env.transfer_cancel != null -> handleCancel(session.peer, env.transfer_cancel.transfer_id)
+            env.features_changed != null -> {
+                session.capabilities = env.features_changed.capabilities.take(MAX_CAPABILITIES).toSet()
+                feature(session, env)
+            }
+            env.notification_posted != null || env.notification_removed != null || env.notification_action != null ||
+                env.battery_status != null || env.ring_request != null ||
+                env.media_state != null || env.media_command != null -> feature(session, env)
             else -> Unit // Unknown or out-of-place message: ignore for forward compatibility.
         }
     }
+
+    private fun feature(session: PeerSession, env: Envelope) {
+        try {
+            events.onFeature(session, env)
+        } catch (_: Exception) {
+            // A bad feature message must never take the connection down.
+        }
+    }
+
+    /** Capabilities this device advertises on top of the core ones; one per feature that is switched on. */
+    @Volatile
+    private var features: Set<String> = emptySet()
+
+    /**
+     * Sets the optional features this device has switched on. New sessions advertise them in Hello; connected
+     * peers are told right away.
+     */
+    public fun setFeatures(enabled: Set<String>) {
+        if (enabled == features) return
+        features = enabled
+        val env = Envelope(features_changed = FeaturesChanged(capabilities = allCapabilities()))
+        for (s in sessions.values) if (s.isOpen) s.trySend(env)
+    }
+
+    /**
+     * Sends a feature message to every connected peer that advertises [capability]. Droppable: a full queue
+     * skips that peer. Returns how many peers it was queued for.
+     */
+    public fun sendFeature(capability: String, env: Envelope): Int {
+        var queued = 0
+        for (s in sessions.values) if (s.isOpen && s.has(capability) && s.trySend(env)) queued++
+        return queued
+    }
+
+    private fun allCapabilities(): List<String> = CAPABILITIES + features.sorted()
 
     /**
      * Sends a clipboard item to every connected peer; a slow peer never blocks the others.
@@ -707,7 +760,7 @@ public class MidfielderNode(
         device_name = deviceName,
         kind = kind,
         protocol_version = Limits.PROTOCOL_VERSION,
-        capabilities = CAPABILITIES,
+        capabilities = allCapabilities(),
     )
 
     private fun validateHello(hello: Hello, peerFp: Fingerprint) {
@@ -741,6 +794,7 @@ public class MidfielderNode(
     private companion object {
         const val IO_BUFFER = 64 * 1024
         val CAPABILITIES = listOf("clipboard.text", "clipboard.image", "file")
+        const val MAX_CAPABILITIES = 64
 
         fun sanitizeName(name: String): String =
             name.filter { it.code >= 0x20 && it.code != 0x7F }.trim().take(Limits.MAX_DEVICE_NAME_CHARS)

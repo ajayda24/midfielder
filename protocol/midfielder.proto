@@ -35,6 +35,17 @@ message Envelope {
     DataOpen data_open = 40;
     DataResume data_resume = 41;
     DataDone data_done = 42;
+
+    // Optional features. A side sends these only to peers that advertise the matching capability
+    // (in Hello, updated by FeaturesChanged) and only while its own switch for the feature is on.
+    FeaturesChanged features_changed = 50;
+    NotificationPosted notification_posted = 55;   // capability "notify": phone -> PC
+    NotificationRemoved notification_removed = 56; // capability "notify": phone -> PC
+    NotificationAction notification_action = 57;   // PC -> phone (reply, button, dismiss)
+    BatteryStatus battery_status = 60;             // capability "battery": either way
+    RingRequest ring_request = 61;                 // capability "ring": either way
+    MediaState media_state = 70;                   // capability "media": what is playing on the sender
+    MediaCommand media_command = 71;               // capability "media": control the receiver's player
   }
 }
 
@@ -148,4 +159,88 @@ message DataDone {
   bool ok = 1;
   string reason = 2;
   bytes sha256 = 3;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Optional features
+// ---------------------------------------------------------------------------------------------------------
+
+// The sender's full capability list changed (a feature was switched on or off). Replaces the list from Hello.
+message FeaturesChanged {
+  repeated string capabilities = 1;
+}
+
+message NotificationButton {
+  string id = 1;                 // opaque, echoed back in NotificationAction
+  string title = 2;
+}
+
+// A notification on the phone. Re-sent with the same key when it is updated.
+message NotificationPosted {
+  string key = 1;                // stable per notification on the phone
+  string app_package = 2;
+  string app_name = 3;
+  string title = 4;
+  string text = 5;
+  int64 posted_at_ms = 6;
+  bytes icon_png = 7;            // small app icon, <= 8 KiB, optional
+  bool can_reply = 8;            // the notification has an inline reply action
+  repeated NotificationButton buttons = 9; // at most 3
+}
+
+message NotificationRemoved {
+  string key = 1;
+}
+
+// From the PC: act on a phone notification. Exactly one of reply_text, button_id or dismiss is set.
+message NotificationAction {
+  string key = 1;
+  string reply_text = 2;
+  string button_id = 3;
+  bool dismiss = 4;
+}
+
+message BatteryStatus {
+  uint32 level = 1;              // 0..100
+  bool charging = 2;
+  bool plugged = 3;
+}
+
+// Make the receiver ring loudly (find my phone / find my PC); start = false stops it.
+message RingRequest {
+  bool start = 1;
+}
+
+// What is playing on the sender. active = false means nothing is (clears the receiver's display).
+message MediaState {
+  bool active = 1;
+  string app_name = 2;
+  string title = 3;
+  string artist = 4;
+  string album = 5;
+  bytes art_jpeg = 6;            // <= 64 KiB, optional; omitted when unchanged since the last MediaState
+  bool art_unchanged = 7;
+  bool playing = 8;
+  int64 position_ms = 9;         // at updated_at_ms
+  int64 duration_ms = 10;
+  int64 updated_at_ms = 11;      // sender clock
+  bool can_next = 12;
+  bool can_previous = 13;
+  bool can_seek = 14;
+}
+
+enum MediaAction {
+  MEDIA_ACTION_UNSPECIFIED = 0;
+  MEDIA_ACTION_PLAY = 1;
+  MEDIA_ACTION_PAUSE = 2;
+  MEDIA_ACTION_TOGGLE = 3;
+  MEDIA_ACTION_NEXT = 4;
+  MEDIA_ACTION_PREVIOUS = 5;
+  MEDIA_ACTION_SEEK = 6;
+}
+
+// Control the receiver's current player (the one its last MediaState described).
+message MediaCommand {
+  MediaAction action = 1;
+  int64 seek_ms = 2;             // for MEDIA_ACTION_SEEK
 }

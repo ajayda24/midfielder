@@ -47,6 +47,17 @@ public sealed class PeerSession : IDisposable
 
     public PairedDevice Peer { get; }
 
+    private volatile IReadOnlySet<string> _capabilities = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>What the peer supports and has switched on (from its Hello, replaced by FeaturesChanged).</summary>
+    public IReadOnlySet<string> Capabilities
+    {
+        get => _capabilities;
+        internal set => _capabilities = value;
+    }
+
+    public bool Has(string capability) => _capabilities.Contains(capability);
+
     /// <summary>True if we opened the connection; the dialer drives heartbeats and opens data connections.</summary>
     public bool IsDialer { get; }
 

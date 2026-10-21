@@ -46,7 +46,15 @@ public class PeerSession internal constructor(
     private val config: NodeConfig,
     private val handler: suspend (PeerSession, Envelope) -> Unit,
     parent: CoroutineScope,
+    capabilities: Set<String> = emptySet(),
 ) {
+    /** What the peer supports and has switched on (from its Hello, replaced by FeaturesChanged). */
+    @Volatile
+    public var capabilities: Set<String> = capabilities
+        internal set
+
+    public fun has(capability: String): Boolean = capability in capabilities
+
     private val job = SupervisorJob(parent.coroutineContext[Job])
     private val scope = CoroutineScope(parent.coroutineContext + job + Dispatchers.IO)
     private val outgoing = Channel<Envelope>(config.sendQueueCapacity)

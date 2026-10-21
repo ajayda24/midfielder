@@ -26,6 +26,12 @@ public interface INodeEvents
 
     void OnTransferProgress(string transferId, long transferred, long total) { }
     void OnTransferFinished(string transferId, PairedDevice from, TransferResult result) { }
+
+    /// <summary>
+    /// An optional-feature message (notifications, battery, ring, media) or a FeaturesChanged update (the session's
+    /// <see cref="PeerSession.Capabilities"/> are already updated). Runs on the session's reader; keep it short.
+    /// </summary>
+    void OnFeature(PeerSession from, Envelope env) { }
 }
 
 public abstract record TransferResult
@@ -215,7 +221,7 @@ public sealed class MidfielderNode : IAsyncDisposable
             _trust.Put(device);
         }
         await WriteNowAsync(ssl, new Envelope { Hello = MyHello() }, ct).ConfigureAwait(false);
-        return StartSession(client, ssl, device, isDialer: false, remote);
+        return StartSession(client, ssl, device, isDialer: false, remote, hello.Capabilities);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -276,7 +282,7 @@ public sealed class MidfielderNode : IAsyncDisposable
             var device = new PairedDevice(expected, SanitizeName(hello.DeviceName), hello.Kind, address.ToString());
             _trust.Put(device);
             if (invite is not null) _events.OnPaired(device);
-            return StartSession(client, ssl, device, isDialer: true, address);
+            return StartSession(client, ssl, device, isDialer: true, address, hello.Capabilities);
         }
         catch
         {
@@ -317,9 +323,10 @@ public sealed class MidfielderNode : IAsyncDisposable
     // Sessions
     // ---------------------------------------------------------------------------------------------
 
-    private PeerSession StartSession(TcpClient client, SslStream ssl, PairedDevice device, bool isDialer, HostPort remote)
+    private PeerSession StartSession(TcpClient client, SslStream ssl, PairedDevice device, bool isDialer, HostPort remote,
+        IEnumerable<string> capabilities)
     {
-        var session = new PeerSession(client, ssl, device, isDialer, remote, _config, DispatchAsync);
+        var session = new PeerSession(client, ssl, device, isDialer, remote, _config, DispatchAsync) { Capabilities = CapabilitySet(capabilities) };
         PeerSession? previous = null;
         _sessions.AddOrUpdate(device.Fingerprint, session, (_, old) =>
         {
@@ -367,10 +374,75 @@ public sealed class MidfielderNode : IAsyncDisposable
             case Envelope.BodyOneofCase.TransferCancel:
                 HandleCancel(session.Peer, env.TransferCancel.TransferId);
                 break;
+            case Envelope.BodyOneofCase.FeaturesChanged:
+                session.Capabilities = CapabilitySet(env.FeaturesChanged.Capabilities);
+                Feature(session, env);
+                break;
+            case Envelope.BodyOneofCase.NotificationPosted:
+            case Envelope.BodyOneofCase.NotificationRemoved:
+            case Envelope.BodyOneofCase.NotificationAction:
+            case Envelope.BodyOneofCase.BatteryStatus:
+            case Envelope.BodyOneofCase.RingRequest:
+            case Envelope.BodyOneofCase.MediaState:
+            case Envelope.BodyOneofCase.MediaCommand:
+                Feature(session, env);
+                break;
             default:
                 break; // unknown or out of place: ignore for forward compatibility
         }
     }
+
+    private void Feature(PeerSession session, Envelope env)
+    {
+        try
+        {
+            _events.OnFeature(session, env);
+        }
+        catch (Exception)
+        {
+            // A bad feature message must never take the connection down.
+        }
+    }
+
+    private const int MaxCapabilities = 64;
+    private static readonly string[] CoreCapabilities = ["clipboard.text", "clipboard.image", "file"];
+    private volatile string[] _features = [];
+
+    private static HashSet<string> CapabilitySet(IEnumerable<string> list) => new(list.Take(MaxCapabilities), StringComparer.Ordinal);
+
+    /// <summary>
+    /// Sets the optional features this device has switched on. New sessions advertise them in Hello; connected peers
+    /// are told right away.
+    /// </summary>
+    public void SetFeatures(IEnumerable<string> enabled)
+    {
+        var sorted = enabled.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (sorted.SequenceEqual(_features)) return;
+        _features = sorted;
+        var changed = new FeaturesChanged();
+        changed.Capabilities.Add(AllCapabilities());
+        var env = new Envelope { FeaturesChanged = changed };
+        foreach (var s in _sessions.Values)
+        {
+            if (s.IsOpen) s.TrySend(env);
+        }
+    }
+
+    /// <summary>
+    /// Sends a feature message to every connected peer that advertises <paramref name="capability"/>. Droppable: a full
+    /// queue skips that peer. Returns how many peers it was queued for.
+    /// </summary>
+    public int SendFeature(string capability, Envelope env)
+    {
+        int queued = 0;
+        foreach (var s in _sessions.Values)
+        {
+            if (s.IsOpen && s.Has(capability) && s.TrySend(env)) queued++;
+        }
+        return queued;
+    }
+
+    private IEnumerable<string> AllCapabilities() => CoreCapabilities.Concat(_features);
 
     /// <summary>
     /// Sends a clipboard item to every connected peer; a slow peer never blocks the others.
@@ -788,7 +860,7 @@ public sealed class MidfielderNode : IAsyncDisposable
     private Hello MyHello()
     {
         var h = new Hello { DeviceId = _identity.DeviceId, DeviceName = _deviceName, Kind = _kind, ProtocolVersion = Limits.ProtocolVersion };
-        h.Capabilities.Add(["clipboard.text", "clipboard.image", "file"]);
+        h.Capabilities.Add(AllCapabilities());
         return h;
     }
 
