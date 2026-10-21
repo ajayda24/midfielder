@@ -11,6 +11,7 @@ import dev.midfielder.android.PhoneNotificationListener
 import dev.midfielder.android.R
 import dev.midfielder.android.Setup
 import dev.midfielder.android.SyncEngine
+import dev.midfielder.core.feature.Features
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -39,9 +40,11 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         root.addView(sync.card, ui.matchWidth(4))
 
         root.addView(ui.sectionHeader("Features"))
-        val features = ui.card(paddingDp = 8)
-        featuresBox = features.body
-        root.addView(features.card, ui.matchWidth(4))
+        root.addView(ui.small("Each feature works when it's on here and in Midfielder on your PC. Off means it doesn't run at all.").apply {
+            setPadding(ui.dp(4), 0, ui.dp(4), ui.dp(4))
+        })
+        featuresBox = ui.vertical()
+        root.addView(featuresBox, ui.matchWidth(0))
 
         root.addView(ui.sectionHeader("Automatic copy setup"))
         val setup = ui.card(paddingDp = 8)
@@ -84,50 +87,82 @@ class SettingsTab(host: MainActivity) : Tab(host) {
     override fun start(scope: CoroutineScope) {
         renderChecklist()
         scope.launch { engine().status.collect { renderPc(it) } }
+        // Feature cards say whether the PC has each feature on too.
+        scope.launch { engine().features.pc.collect { renderFeatures() } }
     }
 
-    /** One switch per feature; a feature's options only show while it is on. Off means nothing runs for it. */
+    /**
+     * One card per feature: icon, title, description, a status line and the switch; the feature's options sit inside
+     * the same card and slide open while it's on. Off means nothing runs for it.
+     */
     private fun renderFeatures() {
         if (!::featuresBox.isInitialized) return
         val box = featuresBox
+        android.transition.TransitionManager.beginDelayedTransition(box, android.transition.AutoTransition().setDuration(220))
         box.removeAllViews()
+        val pc = SyncEngine.current?.features?.pc?.value
+        val granted = PhoneNotificationListener.isGranted(host)
         fun changed(needsAccess: Boolean = false) {
             SyncEngine.current?.features?.apply()
             if (needsAccess && !PhoneNotificationListener.isGranted(host)) openNotificationAccess()
             renderFeatures()
         }
-        fun sub(view: LinearLayout) = view.apply { setPadding(ui.dp(40), paddingTop, ui.dp(12), paddingBottom) }
 
-        box.addView(ui.switchRow("Notifications on PC", "See and reply to this phone's notifications on your PC", storage.featNotify) {
-            storage.featNotify = it
-            changed(needsAccess = it)
-        }.indent())
-        if (storage.featNotify) {
-            box.addView(sub(ui.switchRow("Reply and actions from PC", "Answer messages and tap notification buttons", storage.notifyReply) {
-                storage.notifyReply = it
-            }))
+        /** Adds a feature card; returns its options area (empty and hidden while the feature is off). */
+        fun card(icon: Int, title: String, description: String, on: Boolean, capability: String, set: (Boolean) -> Unit): LinearLayout {
+            val c = ui.card(Ui.Card.FILLED, paddingDp = 0)
+            val header = ui.horizontal().apply { setPadding(ui.dp(16), ui.dp(14), ui.dp(12), ui.dp(14)) }
+            header.addView(ui.iconBadge(icon, 44, if (on) ui.primaryContainer else ui.secondaryContainer, if (on) ui.onPrimaryContainer else ui.onSecondaryContainer, cornerDp = 14))
+            val texts = ui.vertical().apply { setPadding(ui.dp(14), 0, ui.dp(8), 0) }
+            texts.addView(ui.title(title))
+            texts.addView(ui.supporting(description))
+            val (statusText, color) = when {
+                !on -> "Off" to ui.onSurfaceVariant
+                pc == null || pc.name == null -> "On · works when your PC is connected" to ui.onSurfaceVariant
+                capability !in pc.capabilities -> "Turn it on in Midfielder on your PC too" to ui.errorColor
+                else -> "On · working with ${pc.name}" to ui.primary
+            }
+            texts.addView(ui.text(statusText, com.google.android.material.R.style.TextAppearance_Material3_LabelMedium, color).apply {
+                setPadding(0, ui.dp(4), 0, 0)
+            })
+            header.addView(texts, ui.weight())
+            header.addView(ui.switch(on) { v ->
+                set(v)
+                changed(needsAccess = v && capability in setOf(Features.NOTIFY, Features.MEDIA))
+            }, ui.wrap())
+            c.body.addView(header)
+            val options = ui.vertical().apply { setPadding(ui.dp(16), 0, ui.dp(12), ui.dp(8)) }
+            if (on) {
+                c.body.addView(ui.divider())
+                c.body.addView(options)
+            }
+            box.addView(c.card, ui.matchWidth(10))
+            return options
         }
-        // The access prompt goes under whichever switch needs it.
-        val granted = PhoneNotificationListener.isGranted(host)
-        fun accessPrompt(why: String) = box.addView(sub(ui.listRow(
+        fun option(parent: LinearLayout, title: String, subtitle: String, on: Boolean, set: (Boolean) -> Unit, access: Boolean = false) =
+            parent.addView(ui.switchRow(title, subtitle, on) {
+                set(it)
+                changed(needsAccess = access && it)
+            })
+        fun accessPrompt(parent: LinearLayout, why: String) = parent.addView(ui.listRow(
             "Allow notification access", why,
             ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
             below = ui.button("Allow", Ui.Button.TONAL) { openNotificationAccess() },
-        )))
-        if (storage.featNotify && !granted) accessPrompt("Notifications on PC needs it to read this phone's notifications")
+        ))
 
-        box.addView(ui.divider())
-        box.addView(ui.switchRow("Battery sharing", "See your PC's battery here and this phone's on the PC", storage.featBattery) {
-            storage.featBattery = it
-            changed()
-        }.indent())
+        val notify = card(R.drawable.ic_notifications, "Notifications on PC", "See and reply to this phone's notifications on your PC",
+            storage.featNotify, Features.NOTIFY) { storage.featNotify = it }
+        if (storage.featNotify) {
+            if (!granted) accessPrompt(notify, "Needed to read this phone's notifications")
+            option(notify, "Reply and actions from PC", "Answer messages and tap notification buttons", storage.notifyReply, { storage.notifyReply = it })
+        }
+
+        val battery = card(R.drawable.ic_battery, "Battery sharing", "Your PC's battery here, this phone's on the PC",
+            storage.featBattery, Features.BATTERY) { storage.featBattery = it }
         if (storage.featBattery) {
-            box.addView(sub(ui.switchRow("PC battery alerts", "Tell me when the PC is charged to ${storage.batteryFullAt}% or low", storage.batteryAlerts) {
-                storage.batteryAlerts = it
-                changed()
-            }))
+            option(battery, "PC battery alerts", "When the PC is charged to ${storage.batteryFullAt}% or low", storage.batteryAlerts, { storage.batteryAlerts = it })
             if (storage.batteryAlerts) {
-                val chips = ui.horizontal().apply { setPadding(ui.dp(40), 0, ui.dp(12), ui.dp(8)) }
+                val chips = ui.horizontal().apply { setPadding(ui.dp(4), 0, 0, ui.dp(8)) }
                 for (level in listOf(80, 90, 100)) {
                     chips.addView(ui.filterChip("$level%", storage.batteryFullAt == level).apply {
                         setOnClickListener {
@@ -136,31 +171,19 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                         }
                     }, ui.wrap(if (level == 80) 0 else 8))
                 }
-                box.addView(chips)
+                battery.addView(chips)
             }
         }
 
-        box.addView(ui.divider())
-        box.addView(ui.switchRow("Find my phone", "Your PC can ring this phone at full volume, even on silent", storage.featRing) {
-            storage.featRing = it
-            changed()
-        }.indent())
+        card(R.drawable.ic_ring, "Find my phone", "Your PC can ring this phone at full volume, even on silent",
+            storage.featRing, Features.RING) { storage.featRing = it }
 
-        box.addView(ui.divider())
-        box.addView(ui.switchRow("Music control", "Control music across your phone and PC", storage.featMedia) {
-            storage.featMedia = it
-            changed(needsAccess = it && storage.mediaPhoneToPc)
-        }.indent())
+        val music = card(R.drawable.ic_music, "Music control", "Play, pause and skip across your phone and PC",
+            storage.featMedia, Features.MEDIA) { storage.featMedia = it }
         if (storage.featMedia) {
-            box.addView(sub(ui.switchRow("Phone music on PC", "Shows in the Windows media controls", storage.mediaPhoneToPc) {
-                storage.mediaPhoneToPc = it
-                changed(needsAccess = it)
-            }))
-            if (storage.mediaPhoneToPc && !granted && !storage.featNotify) accessPrompt("Phone music on PC needs it to see what's playing")
-            box.addView(sub(ui.switchRow("PC music on phone", "Shows in this phone's media controls", storage.mediaPcToPhone) {
-                storage.mediaPcToPhone = it
-                changed()
-            }))
+            option(music, "Phone music on PC", "In the Windows media controls and media keys", storage.mediaPhoneToPc, { storage.mediaPhoneToPc = it }, access = true)
+            if (storage.mediaPhoneToPc && !granted) accessPrompt(music, "Needed to see what's playing on this phone")
+            option(music, "PC music on phone", "In this phone's media controls and lock screen", storage.mediaPcToPhone, { storage.mediaPcToPhone = it })
         }
     }
 

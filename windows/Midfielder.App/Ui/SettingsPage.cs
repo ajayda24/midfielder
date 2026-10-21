@@ -1,3 +1,4 @@
+using Midfielder.Core.Feature;
 using System.Windows;
 using System.Windows.Controls;
 using Fluent = Wpf.Ui.Controls;
@@ -25,7 +26,7 @@ internal sealed class SettingsPage : PageBase
 
         Add(Section("Features"), 20);
         Add(Fx.Caption("Each feature works when it's on here and in Midfielder on your phone. Off means it doesn't run at all.", wrap: true), 6);
-        Add(_features, 10);
+        Add(_features, 0);
         RenderFeatures();
 
         Add(Section("Windows"), 20);
@@ -51,6 +52,7 @@ internal sealed class SettingsPage : PageBase
             Fx.Secondary("Clear", null, () => _ = ClearHistory())), 4);
 
         Host.StatusChanged += OnStatus;
+        Host.PhoneChanged += OnPhone;
         RenderDevices();
         RenderMenuState();
     }
@@ -74,67 +76,80 @@ internal sealed class SettingsPage : PageBase
         return Row(icon, title, Fx.Caption(description, wrap: true), sw);
     }
 
-    /// <summary>One switch per feature; its options appear only while it's on.</summary>
+    private readonly List<(FeatureCard Card, string Capability, Func<bool> On)> _cards = [];
+
+    /// <summary>
+    /// One card per feature, built once; switching animates the card's options open or closed in place. Each card's
+    /// status line says whether the feature actually works right now (on here, and on the phone too).
+    /// </summary>
     private void RenderFeatures()
     {
         var f = Host.Settings.Features;
         _features.Children.Clear();
-        void Changed()
+        _cards.Clear();
+        FeatureCard Card(Fluent.SymbolRegular icon, string title, string description, string capability, Func<bool> on, Action<bool> set)
         {
-            Host.ApplyFeatures();
-            RenderFeatures();
-        }
-        void Main(Fluent.SymbolRegular icon, string title, string description, bool on, Action<bool> set) =>
-            Fx.Add(_features, Toggle(icon, title, description, on, v =>
+            var card = new FeatureCard(icon, title, description, on(), v =>
             {
                 set(v);
-                Changed();
-            }), 4);
-        void Sub(string title, string description, bool on, Action<bool> set)
-        {
-            var row = Toggle(Fluent.SymbolRegular.ChevronRight20, title, description, on, v =>
-            {
-                set(v);
-                Changed();
+                Host.ApplyFeatures();
+                RenderFeatureStatus();
             });
-            row.Margin = new Thickness(40, 0, 0, 0);
-            Fx.Add(_features, row, 2);
+            _cards.Add((card, capability, on));
+            Fx.Add(_features, card, 12);
+            return card;
         }
-
-        Main(Fluent.SymbolRegular.Alert24, "Phone notifications", "See your phone's notifications here, as Windows notifications", f.Notify, v => f.Notify = v);
-        if (f.Notify) Sub("Reply and actions", "Reply box and the notification's buttons, right in the Windows notification", f.NotifyReply, v => f.NotifyReply = v);
-
-        Main(Fluent.SymbolRegular.Battery524, "Battery sharing", "Your phone's battery here, this PC's on the phone", f.Battery, v => f.Battery = v);
-        if (f.Battery)
+        Action<bool> Save(Action<bool> set) => v =>
         {
-            Sub("Phone battery alerts", "When it's charged (unplug to protect the battery) and when it's low", f.BatteryAlerts, v => f.BatteryAlerts = v);
-            if (f.BatteryAlerts)
+            set(v);
+            Host.ApplyFeatures();
+        };
+
+        Card(Fluent.SymbolRegular.Alert24, "Phone notifications", "See your phone's notifications here, as Windows notifications",
+                Features.Notify, () => f.Notify, v => f.Notify = v)
+            .OptionToggle("Reply and actions", "A reply box and the notification's own buttons, right in the Windows notification",
+                f.NotifyReply, Save(v => f.NotifyReply = v));
+
+        var level = new ComboBox { MinWidth = 100, ItemsSource = new[] { "80%", "90%", "100%" }, SelectedItem = $"{f.BatteryFullAt}%" };
+        System.Windows.Automation.AutomationProperties.SetName(level, "Charged alert level");
+        level.SelectionChanged += (_, _) =>
+        {
+            if (level.SelectedItem is string text && int.TryParse(text.TrimEnd('%'), out int v) && v != f.BatteryFullAt)
             {
-                var level = new ComboBox { MinWidth = 110, ItemsSource = new[] { "80%", "90%", "100%" }, SelectedItem = $"{f.BatteryFullAt}%" };
-                System.Windows.Automation.AutomationProperties.SetName(level, "Charged alert level");
-                level.SelectionChanged += (_, _) =>
-                {
-                    if (level.SelectedItem is string text && int.TryParse(text.TrimEnd('%'), out int v) && v != f.BatteryFullAt)
-                    {
-                        f.BatteryFullAt = v;
-                        Host.ApplyFeatures();
-                    }
-                };
-                var row = Row(Fluent.SymbolRegular.BatteryCharge24, "Charged alert at", Fx.Caption("80% is kindest to the battery"), level);
-                row.Margin = new Thickness(40, 0, 0, 0);
-                Fx.Add(_features, row, 2);
+                f.BatteryFullAt = v;
+                Host.ApplyFeatures();
             }
-        }
+        };
+        Card(Fluent.SymbolRegular.Battery524, "Battery sharing", "Your phone's battery here, and this PC's on the phone",
+                Features.Battery, () => f.Battery, v => f.Battery = v)
+            .OptionToggle("Phone battery alerts", "When it's charged (unplug to protect the battery) and when it's low", f.BatteryAlerts, Save(v => f.BatteryAlerts = v))
+            .Option("Charged alert at", "80% is kindest to the battery", level);
 
-        Main(Fluent.SymbolRegular.Speaker224, "Find my phone", "Ring your phone at full volume, even on silent, and let it ring this PC", f.Ring, v => f.Ring = v);
+        Card(Fluent.SymbolRegular.Speaker224, "Find my phone", "Ring your phone at full volume, even on silent, and let it ring this PC",
+            Features.Ring, () => f.Ring, v => f.Ring = v);
 
-        Main(Fluent.SymbolRegular.MusicNote224, "Music control", "Control music across your phone and this PC", f.Media, v => f.Media = v);
-        if (f.Media)
+        Card(Fluent.SymbolRegular.MusicNote224, "Music control", "Play, pause and skip across your phone and this PC",
+                Features.Media, () => f.Media, v => f.Media = v)
+            .OptionToggle("Phone music on this PC", "In the Windows media controls, with album art and media keys", f.MediaPhoneToPc, Save(v => f.MediaPhoneToPc = v))
+            .OptionToggle("This PC's music on the phone", "In the phone's media controls and on its lock screen", f.MediaPcToPhone, Save(v => f.MediaPcToPhone = v));
+
+        RenderFeatureStatus();
+    }
+
+    private void RenderFeatureStatus()
+    {
+        var phone = Host.Phone;
+        bool connected = phone.Name is not null;
+        foreach (var (card, capability, on) in _cards)
         {
-            Sub("Phone music on this PC", "Shows in the Windows media controls and works with media keys", f.MediaPhoneToPc, v => f.MediaPhoneToPc = v);
-            Sub("This PC's music on the phone", "Shows in the phone's media controls and lock screen", f.MediaPcToPhone, v => f.MediaPcToPhone = v);
+            if (!on()) card.SetStatus("Off", FeatureStatus.Off);
+            else if (!connected) card.SetStatus("On · works when your phone is connected", FeatureStatus.Waiting);
+            else if (!phone.Capabilities.Contains(capability)) card.SetStatus("Turn it on in Midfielder on your phone too", FeatureStatus.Waiting);
+            else card.SetStatus("On · working with " + phone.Name, FeatureStatus.Working);
         }
     }
+
+    private void OnPhone() => Post(RenderFeatureStatus);
 
     private void OnStatus() => Post(RenderDevices);
 
@@ -213,5 +228,9 @@ internal sealed class SettingsPage : PageBase
         Window.Toast("File history cleared");
     }
 
-    protected override void OnDispose() => Host.StatusChanged -= OnStatus;
+    protected override void OnDispose()
+    {
+        Host.StatusChanged -= OnStatus;
+        Host.PhoneChanged -= OnPhone;
+    }
 }

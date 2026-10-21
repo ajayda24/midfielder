@@ -28,6 +28,8 @@ internal static class Fx
     public static readonly Brush DangerBg = Freeze(Color.FromRgb(0xFC, 0xEE, 0xEE));
     public static readonly Brush Online = Freeze(Color.FromRgb(0x2E, 0x9B, 0x6F));
     public static readonly Brush Offline = Freeze(Color.FromRgb(0xB8, 0xC2, 0xBD));
+    public static readonly Brush Warning = Freeze(Color.FromRgb(0xE0, 0xA1, 0x00));
+    public static readonly Brush WarningText = Freeze(Color.FromRgb(0x8A, 0x5A, 0x00));
     public static readonly Brush Transparent = Freeze(Colors.Transparent);
 
     /// <summary>Soft green gradient for the hero card.</summary>
