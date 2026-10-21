@@ -23,44 +23,48 @@ class Ringer(context: Context, private val notifications: Notifications) {
 
     val isRinging: Boolean get() = player != null
 
-    fun start() = main.post {
-        if (player != null) return@post
-        val uri = RingtoneManager.getActualDefaultRingtoneUri(app, RingtoneManager.TYPE_ALARM)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ?: return@post
-        savedVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
-        audio.setStreamVolume(AudioManager.STREAM_ALARM, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
-        player = runCatching {
-            MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build(),
-                )
-                setDataSource(app, uri)
-                isLooping = true
-                prepare()
-                start()
+    fun start() {
+        main.post {
+            if (player != null) return@post
+            val uri = RingtoneManager.getActualDefaultRingtoneUri(app, RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ?: return@post
+            savedVolume = audio.getStreamVolume(AudioManager.STREAM_ALARM)
+            audio.setStreamVolume(AudioManager.STREAM_ALARM, audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
+            player = runCatching {
+                MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build(),
+                    )
+                    setDataSource(app, uri)
+                    isLooping = true
+                    prepare()
+                    start()
+                }
+            }.onFailure { EventLog.error("Couldn't play the ring sound", it) }.getOrNull()
+            if (player == null) {
+                restoreVolume()
+                return@post
             }
-        }.onFailure { EventLog.error("Couldn't play the ring sound", it) }.getOrNull()
-        if (player == null) {
-            restoreVolume()
-            return@post
+            notifications.ringing()
+            main.postDelayed(autoStop, MAX_MS)
+            EventLog.add("Ringing: the PC is looking for this phone")
         }
-        notifications.ringing()
-        main.postDelayed(autoStop, MAX_MS)
-        EventLog.add("Ringing: the PC is looking for this phone")
     }
 
-    fun stop() = main.post {
-        main.removeCallbacks(autoStop)
-        val p = player ?: return@post
-        player = null
-        runCatching {
-            p.stop()
-            p.release()
+    fun stop() {
+        main.post {
+            main.removeCallbacks(autoStop)
+            val p = player ?: return@post
+            player = null
+            runCatching {
+                p.stop()
+                p.release()
+            }
+            restoreVolume()
+            notifications.cancelRinging()
         }
-        restoreVolume()
-        notifications.cancelRinging()
     }
 
     private fun restoreVolume() {

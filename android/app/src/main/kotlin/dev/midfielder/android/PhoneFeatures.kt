@@ -102,19 +102,25 @@ class PhoneFeatures(
     }
 
     fun onMessage(from: PeerSession, env: Envelope) {
+        // Locals: the generated properties live in :core, so Kotlin won't smart-cast them.
+        val action = env.notification_action
+        val battery = env.battery_status
+        val ring = env.ring_request
+        val mediaState = env.media_state
+        val mediaCommand = env.media_command
         when {
             env.features_changed != null -> {
                 refreshPc()
                 if (from.has(Features.BATTERY)) lastBattery?.let { from.trySend(Envelope(battery_status = it)) }
                 if (from.has(Features.MEDIA)) phoneMedia.resend() else pcMedia.clear()
             }
-            env.notification_action != null -> if (storage.featNotify) notifications.act(env.notification_action)
-            env.battery_status != null -> if (storage.featBattery) onPcBattery(env.battery_status)
-            env.ring_request != null -> if (storage.featRing) {
-                if (env.ring_request.start) ringer.start() else ringer.stop()
+            action != null -> if (storage.featNotify) notifications.act(action)
+            battery != null -> if (storage.featBattery) onPcBattery(battery)
+            ring != null -> if (storage.featRing) {
+                if (ring.start) ringer.start() else ringer.stop()
             }
-            env.media_state != null -> if (storage.featMedia && storage.mediaPcToPhone) pcMedia.show(env.media_state)
-            env.media_command != null -> if (phoneMusicOn()) phoneMedia.command(env.media_command)
+            mediaState != null -> if (storage.featMedia && storage.mediaPcToPhone) pcMedia.show(mediaState)
+            mediaCommand != null -> if (phoneMusicOn()) phoneMedia.command(mediaCommand)
         }
     }
 

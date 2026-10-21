@@ -43,41 +43,49 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
         }
     }
 
-    fun start() = main.post {
-        if (started || !PhoneNotificationListener.isGranted(app)) return@post
-        runCatching {
-            sessions.addOnActiveSessionsChangedListener(onSessions, PhoneNotificationListener.component(app), main)
-            started = true
-            pick(activeSessions())
-        }.onFailure { EventLog.error("Can't follow the phone's music", it) }
+    fun start() {
+        main.post {
+            if (started || !PhoneNotificationListener.isGranted(app)) return@post
+            runCatching {
+                sessions.addOnActiveSessionsChangedListener(onSessions, PhoneNotificationListener.component(app), main)
+                started = true
+                pick(activeSessions())
+            }.onFailure { EventLog.error("Can't follow the phone's music", it) }
+        }
     }
 
-    fun stop() = main.post {
-        if (!started) return@post
-        started = false
-        runCatching { sessions.removeOnActiveSessionsChangedListener(onSessions) }
-        controller?.unregisterCallback(callback)
-        controller = null
-        main.removeCallbacks(push)
+    fun stop() {
+        main.post {
+            if (!started) return@post
+            started = false
+            runCatching { sessions.removeOnActiveSessionsChangedListener(onSessions) }
+            controller?.unregisterCallback(callback)
+            controller = null
+            main.removeCallbacks(push)
+        }
     }
 
     /** A PC (re)connected or switched music on: send the full state, art included. */
-    fun resend() = main.post {
-        artKey = null
-        if (started) sendNow()
+    fun resend() {
+        main.post {
+            artKey = null
+            if (started) sendNow()
+        }
     }
 
-    fun command(cmd: MediaCommand) = main.post {
-        val c = controller ?: return@post
-        val t = c.transportControls
-        when (cmd.action) {
-            MediaAction.MEDIA_ACTION_PLAY -> t.play()
-            MediaAction.MEDIA_ACTION_PAUSE -> t.pause()
-            MediaAction.MEDIA_ACTION_TOGGLE -> if (c.playbackState?.state == PlaybackState.STATE_PLAYING) t.pause() else t.play()
-            MediaAction.MEDIA_ACTION_NEXT -> t.skipToNext()
-            MediaAction.MEDIA_ACTION_PREVIOUS -> t.skipToPrevious()
-            MediaAction.MEDIA_ACTION_SEEK -> t.seekTo(cmd.seek_ms.coerceAtLeast(0))
-            else -> Unit
+    fun command(cmd: MediaCommand) {
+        main.post {
+            val c = controller ?: return@post
+            val t = c.transportControls
+            when (cmd.action) {
+                MediaAction.MEDIA_ACTION_PLAY -> t.play()
+                MediaAction.MEDIA_ACTION_PAUSE -> t.pause()
+                MediaAction.MEDIA_ACTION_TOGGLE -> if (c.playbackState?.state == PlaybackState.STATE_PLAYING) t.pause() else t.play()
+                MediaAction.MEDIA_ACTION_NEXT -> t.skipToNext()
+                MediaAction.MEDIA_ACTION_PREVIOUS -> t.skipToPrevious()
+                MediaAction.MEDIA_ACTION_SEEK -> t.seekTo(cmd.seek_ms.coerceAtLeast(0))
+                else -> Unit
+            }
         }
     }
 
@@ -161,48 +169,52 @@ class PcMedia(context: Context, private val notifications: Notifications, privat
     private var session: MediaSession? = null
     private var art: Bitmap? = null
 
-    fun show(state: MediaState) = main.post {
-        if (!state.active) {
-            clearNow()
-            return@post
+    fun show(state: MediaState) {
+        main.post {
+            if (!state.active) {
+                clearNow()
+                return@post
+            }
+            val s = session ?: MediaSession(app, "Midfielder PC").also {
+                it.setCallback(object : MediaSession.Callback() {
+                    override fun onPlay() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_PLAY))
+                    override fun onPause() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_PAUSE))
+                    override fun onSkipToNext() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_NEXT))
+                    override fun onSkipToPrevious() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_PREVIOUS))
+                    override fun onSeekTo(pos: Long) = command(MediaCommand(action = MediaAction.MEDIA_ACTION_SEEK, seek_ms = pos))
+                })
+                session = it
+            }
+            if (!state.art_unchanged) {
+                art = state.art_jpeg.takeIf { it.size > 0 }?.toByteArray()?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            }
+            s.setMetadata(
+                MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, state.title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, state.artist)
+                    .putString(MediaMetadata.METADATA_KEY_ALBUM, state.album)
+                    .putLong(MediaMetadata.METADATA_KEY_DURATION, state.duration_ms)
+                    .apply { art?.let { putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) } }
+                    .build(),
+            )
+            var actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE
+            if (state.can_next) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
+            if (state.can_previous) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
+            if (state.can_seek) actions = actions or PlaybackState.ACTION_SEEK_TO
+            s.setPlaybackState(
+                PlaybackState.Builder()
+                    .setActions(actions)
+                    .setState(if (state.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, state.position_ms, if (state.playing) 1f else 0f)
+                    .build(),
+            )
+            s.isActive = true
+            notifications.pcMedia(s.sessionToken, state, art)
         }
-        val s = session ?: MediaSession(app, "Midfielder PC").also {
-            it.setCallback(object : MediaSession.Callback() {
-                override fun onPlay() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_PLAY))
-                override fun onPause() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_PAUSE))
-                override fun onSkipToNext() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_NEXT))
-                override fun onSkipToPrevious() = command(MediaCommand(action = MediaAction.MEDIA_ACTION_PREVIOUS))
-                override fun onSeekTo(pos: Long) = command(MediaCommand(action = MediaAction.MEDIA_ACTION_SEEK, seek_ms = pos))
-            })
-            session = it
-        }
-        if (!state.art_unchanged) {
-            art = state.art_jpeg.takeIf { it.size > 0 }?.toByteArray()?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-        }
-        s.setMetadata(
-            MediaMetadata.Builder()
-                .putString(MediaMetadata.METADATA_KEY_TITLE, state.title)
-                .putString(MediaMetadata.METADATA_KEY_ARTIST, state.artist)
-                .putString(MediaMetadata.METADATA_KEY_ALBUM, state.album)
-                .putLong(MediaMetadata.METADATA_KEY_DURATION, state.duration_ms)
-                .apply { art?.let { putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) } }
-                .build(),
-        )
-        var actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE
-        if (state.can_next) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
-        if (state.can_previous) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
-        if (state.can_seek) actions = actions or PlaybackState.ACTION_SEEK_TO
-        s.setPlaybackState(
-            PlaybackState.Builder()
-                .setActions(actions)
-                .setState(if (state.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, state.position_ms, if (state.playing) 1f else 0f)
-                .build(),
-        )
-        s.isActive = true
-        notifications.pcMedia(s.sessionToken, state, art)
     }
 
-    fun clear() = main.post { clearNow() }
+    fun clear() {
+        main.post { clearNow() }
+    }
 
     private fun clearNow() {
         notifications.cancelPcMedia()
