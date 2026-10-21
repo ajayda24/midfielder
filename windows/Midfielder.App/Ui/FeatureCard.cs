@@ -23,10 +23,9 @@ internal sealed class FeatureCard : Border
     public FeatureCard(Fluent.SymbolRegular icon, string title, string description, bool on, Action<bool> changed)
     {
         Background = Fx.Surface;
-        BorderBrush = Fx.Outline;
-        BorderThickness = new Thickness(1);
+        BorderBrush = Fx.CardEdge;
+        BorderThickness = new Thickness(1, 1, 1, 1.5);
         CornerRadius = new CornerRadius(14);
-        Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 2, Direction = 270, Opacity = 0.05, Color = Colors.Black };
         Anim.HoverLift(this);
 
         _switch = new Fluent.ToggleSwitch { IsChecked = on, VerticalAlignment = VerticalAlignment.Center };

@@ -98,6 +98,8 @@ internal sealed class Sidebar : Grid
         MovePill(animate: !first);
     }
 
+    private bool _wasConnected;
+
     public bool Compact
     {
         get => _compact;
@@ -117,7 +119,8 @@ internal sealed class Sidebar : Grid
         _status.Text = text;
         _dot.Fill = connected ? Fx.Online : Fx.Offline;
         ToolTip = text;
-        Anim.Pulse(_dot, connected);
+        if (connected != _wasConnected) Anim.Pulse(_dot, connected); // only when it changes, not on every status update
+        _wasConnected = connected;
     }
 
     private void MovePill(bool animate)

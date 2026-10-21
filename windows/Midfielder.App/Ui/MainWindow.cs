@@ -5,9 +5,9 @@ using Fluent = Wpf.Ui.Controls;
 namespace Midfielder.App.Ui;
 
 /// <summary>
-/// The main window: Fluent (Mica, rounded, custom title bar), a navigation rail and one page at a time.
-/// Opened from the tray and closed completely (nothing UI-heavy stays alive in the tray). Files dropped
-/// anywhere on it go to the phone.
+/// The main window: Fluent (rounded, custom title bar, solid background), a navigation rail and one page at a time.
+/// Built the first time it's opened; closing it only hides it (its page is dropped, so nothing runs while hidden),
+/// so opening it again is instant. Files dropped anywhere on it go to the phone.
 /// </summary>
 internal sealed class MainWindow : Fluent.FluentWindow
 {
@@ -39,7 +39,10 @@ internal sealed class MainWindow : Fluent.FluentWindow
         Width = Math.Min(Width, Math.Max(MinWidth, area.Width * 0.92));
         Height = Math.Min(Height, Math.Max(MinHeight, area.Height * 0.92));
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        WindowBackdropType = Fluent.WindowBackdropType.Mica;
+        // A solid background, not Mica: the first frame is already our colour (Mica shows white or black until DWM
+        // draws it, on every restore too) and the window doesn't change look when it loses focus.
+        WindowBackdropType = Fluent.WindowBackdropType.None;
+        Background = Fx.WindowBackground;
         WindowCornerPreference = Fluent.WindowCornerPreference.Round;
         ExtendsContentIntoTitleBar = true;
         FontFamily = Fx.Font;
@@ -93,6 +96,21 @@ internal sealed class MainWindow : Fluent.FluentWindow
     }
 
     public string CurrentPage { get; private set; } = "";
+
+    /// <summary>The tray's window hides on close instead of closing (set false to really close, e.g. on exit).</summary>
+    public bool HideOnClose { get; set; }
+
+    /// <summary>Shows the window again after it was hidden, on <paramref name="page"/> or the page it was on.</summary>
+    public void Reopen(string? page)
+    {
+        if (_page is null) CurrentPage = "";
+        ShowPage(page ?? (CurrentPage.Length > 0 ? CurrentPage : _lastPage));
+        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Show();
+        Activate();
+    }
+
+    private string _lastPage = HomeName;
 
     public PageBase? Page => _page;
 
@@ -205,6 +223,15 @@ internal sealed class MainWindow : Fluent.FluentWindow
         _host.Settings.WindowBounds = [(int)r.X, (int)r.Y, (int)r.Width, (int)r.Height, WindowState == WindowState.Maximized ? 1 : 0];
         _host.SaveSettings();
         base.OnClosing(e);
+        if (e.Cancel || !HideOnClose) return;
+        e.Cancel = true;
+        Hide();
+        // Drop the page: its events, timers and animations stop; it's rebuilt (fast, everything is warm) on reopen.
+        _lastPage = CurrentPage;
+        _page?.Dispose();
+        _page = null;
+        _pageHost.Content = null;
+        CurrentPage = "";
     }
 
     protected override void OnClosed(EventArgs e)

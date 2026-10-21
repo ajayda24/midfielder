@@ -189,7 +189,9 @@ internal sealed class FilesPage : PageBase
             bool on = f == s_filter;
             Anim.Tint(seg, on ? Colors.White : Colors.Transparent);
             ((TextBlock)seg.Child).Foreground = on ? Fx.PrimaryDark : Fx.Muted;
-            seg.Effect = on ? new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 6, ShadowDepth = 1, Opacity = 0.08, Direction = 270 } : null;
+            // The selected segment stands out with an edge, not a shadow effect (effects slow scrolling).
+            seg.BorderBrush = on ? Fx.CardEdge : Fx.Transparent;
+            seg.BorderThickness = new Thickness(1, 1, 1, 1.5);
         }
     }
 

@@ -62,6 +62,30 @@ public sealed partial class MainWindowTests : IDisposable
             Assert.True(userAfter - user < 40, $"USER handles grew from {user} to {userAfter}");
             Assert.Empty(W.Application.Current.Windows);
 
+            // The tray's window: closing hides it (same object, page dropped), reopening is instant.
+            var tray = new MainWindow(host) { HideOnClose = true, WindowStartupLocation = W.WindowStartupLocation.Manual, Left = 0, Top = 0 };
+            tray.Show();
+            Pump(300);
+            for (int i = 0; i < 4; i++)
+            {
+                tray.Close();
+                Pump(100);
+                Assert.False(tray.IsVisible, "closing the tray's window should hide it");
+                Assert.Null(tray.Page);
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                tray.Reopen(i % 2 == 0 ? MainWindow.SettingsName : null);
+                tray.UpdateLayout();
+                clock.Stop();
+                Assert.True(tray.IsVisible && tray.Page is not null, "reopen should show the window with a page");
+                Assert.True(clock.ElapsedMilliseconds < 400, $"reopening took {clock.ElapsedMilliseconds} ms");
+                Pump(100);
+            }
+            Assert.Equal(MainWindow.SettingsName, tray.CurrentPage); // remembers the last page when none is asked for
+            tray.HideOnClose = false;
+            tray.Close();
+            Pump(150);
+            Assert.Empty(W.Application.Current.Windows);
+
             // What a first start looks like: nothing paired or sent yet, with real animations running.
             // Same thread: WPF allows one Application per process, owned by the thread that created it.
             Anim.Disabled = false;
@@ -82,6 +106,9 @@ public sealed partial class MainWindowTests : IDisposable
     {
         var window = new MainWindow(host) { WindowStartupLocation = W.WindowStartupLocation.Manual, Left = 0, Top = 0 };
         window.Show();
+        // The taskbar button draws this icon (both sizes must be there).
+        var hwnd = new W.Interop.WindowInteropHelper(window).Handle;
+        if (SendMessage(hwnd, WM_GETICON, 1, 0) == 0 || SendMessage(hwnd, WM_GETICON, 0, 0) == 0) problems.Add($"{prefix}: the window has no icon for the taskbar");
         foreach (var (w, h) in sizes)
         {
             window.Width = w;
@@ -92,6 +119,21 @@ public sealed partial class MainWindowTests : IDisposable
                 Pump(page == MainWindow.FilesName ? 1_200 : 300);
                 Check(window, $"{prefix}{w}x{h} {page}", problems);
                 Snap(window, screens, $"windows-{prefix}{w}-{page}.png");
+                // Effects (drop shadows) re-render offscreen on every scroll frame: none on scrolling pages.
+                int effects = Descendants(window.Page!).OfType<W.UIElement>().Count(e => e.Effect is not null);
+                if (effects > 0) problems.Add($"{prefix}{w}x{h} {page}: {effects} elements use an Effect (slow scrolling)");
+                if (w == 1280 && window.Page?.Scroller is { ScrollableHeight: > 0 } sv && page is MainWindow.HomeName or MainWindow.SettingsName)
+                {
+                    // The rest of the page, for review: the middle and the end.
+                    sv.ScrollToVerticalOffset(sv.ScrollableHeight / 2);
+                    sv.UpdateLayout();
+                    Snap(window, screens, $"windows-{prefix}{w}-{page}-mid.png");
+                    sv.ScrollToEnd();
+                    sv.UpdateLayout();
+                    Snap(window, screens, $"windows-{prefix}{w}-{page}-end.png");
+                    sv.ScrollToTop();
+                    sv.UpdateLayout();
+                }
             }
             ToggleGallery(window);
             Pump(1_000);
@@ -246,6 +288,11 @@ public sealed partial class MainWindowTests : IDisposable
 
     [LibraryImport("kernel32.dll")]
     private static partial IntPtr GetCurrentProcess();
+
+    private const uint WM_GETICON = 0x007F;
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static partial IntPtr SendMessage(IntPtr hwnd, uint msg, nint wParam, nint lParam);
 
     private sealed class FakeHost : IAppHost
     {

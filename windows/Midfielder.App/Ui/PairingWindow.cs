@@ -23,7 +23,12 @@ internal sealed class PairingWindow : Fluent.FluentWindow
         SizeToContent = SizeToContent.Height;
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        WindowBackdropType = Fluent.WindowBackdropType.Mica;
+        WindowBackdropType = Fluent.WindowBackdropType.None; // solid: no white or black first frame
+        Background = Fx.WindowBackground;
+        KeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Escape) Close();
+        };
         ExtendsContentIntoTitleBar = true;
         FontFamily = Fx.Font;
 

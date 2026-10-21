@@ -180,11 +180,16 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         return menu;
     }
 
-    /// <summary>Opens (or brings to front) the main window. Closing it disposes it completely.</summary>
+    /// <summary>Opens (or brings to front) the main window. It's built once; closing it only hides it.</summary>
     private void ShowMain(string? page = null)
     {
         if (_mainForm is not null)
         {
+            if (!_mainForm.IsVisible)
+            {
+                _mainForm.Reopen(page);
+                return;
+            }
             if (page is not null) _mainForm.ShowPage(page);
             if (_mainForm.WindowState == System.Windows.WindowState.Minimized) _mainForm.WindowState = System.Windows.WindowState.Normal;
             _mainForm.Activate();
@@ -193,7 +198,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         AppLog.Info("Creating main window");
         try
         {
-            _mainForm = new MainWindow(this, page ?? MainWindow.HomeName);
+            _mainForm = new MainWindow(this, page ?? MainWindow.HomeName) { HideOnClose = true };
             _mainForm.Closed += (_, _) => _mainForm = null;
             _mainForm.Show();
             _mainForm.Activate();
@@ -880,6 +885,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
 
     protected override void ExitThreadCore()
     {
+        if (_mainForm is not null) _mainForm.HideOnClose = false; // Exit really closes it
         _tray.Visible = false;
         base.ExitThreadCore();
     }
@@ -891,6 +897,7 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
             _cts.Cancel();
+            if (_mainForm is not null) _mainForm.HideOnClose = false;
             _mainForm?.Close();
             _features.Dispose();
             _sendBatchTimer.Dispose();

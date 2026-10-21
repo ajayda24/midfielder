@@ -28,7 +28,7 @@ internal static class WpfApp
         var resources = Application.Current!.Resources;
         resources.MergedDictionaries.Add(new ThemesDictionary { Theme = ApplicationTheme.Light });
         resources.MergedDictionaries.Add(new ControlsDictionary());
-        ApplicationThemeManager.Apply(ApplicationTheme.Light, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
+        ApplicationThemeManager.Apply(ApplicationTheme.Light, Wpf.Ui.Controls.WindowBackdropType.None, false);
         ApplicationAccentColorManager.Apply(Fx.PrimaryColor, ApplicationTheme.Light, false, false);
     }
 }

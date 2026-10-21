@@ -217,6 +217,8 @@ internal sealed class HomePage : PageBase
 
     private void OnHistory() => Post(RenderHistory);
 
+    private bool _wasConnected;
+
     private void RenderStatus()
     {
         var connected = Host.ConnectedDevices;
@@ -226,7 +228,8 @@ internal sealed class HomePage : PageBase
             : "No phone paired yet";
         _chipText.Text = connected.Count > 0 ? "Connected" : paired.Count > 0 ? "Looking for your phone…" : "Not paired";
         _chipDot.Fill = connected.Count > 0 ? Fx.Online : Fx.Offline;
-        Anim.Pulse(_chipDot, connected.Count > 0);
+        if ((connected.Count > 0) != _wasConnected) Anim.Pulse(_chipDot, connected.Count > 0);
+        _wasConnected = connected.Count > 0;
         _address.Text = connected.Count > 0 && Host.AddressOf(connected[0]) is { } a ? a
             : paired.Count == 0 ? "Click Pair a phone and scan the code with Midfielder on Android" : "";
         _pair.Visibility = paired.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -264,7 +267,11 @@ internal sealed class HomePage : PageBase
         {
             _mediaTitle.Text = m.Title.Length > 0 ? m.Title : m.AppName;
             _mediaArtist.Text = string.Join(" · ", new[] { m.Artist, m.AppName }.Where(x => x.Length > 0));
-            _mediaToggle.Icon = new Fluent.SymbolIcon { Symbol = m.Playing ? Fluent.SymbolRegular.Pause24 : Fluent.SymbolRegular.Play24, FontSize = 16 };
+            if (_mediaPlaying != m.Playing)
+            {
+                _mediaPlaying = m.Playing;
+                _mediaToggle.Icon = new Fluent.SymbolIcon { Symbol = m.Playing ? Fluent.SymbolRegular.Pause24 : Fluent.SymbolRegular.Play24, FontSize = 16 };
+            }
             if (!m.ArtUnchanged || _artFor is null)
             {
                 _artFor = m.Title;
@@ -279,8 +286,38 @@ internal sealed class HomePage : PageBase
         }
 
         _notifyCard.Visibility = f.Notify && phone.Notifications.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RenderNotifications(phone.Notifications.Take(5).ToList());
+    }
+
+    private bool? _mediaPlaying;
+    private readonly Dictionary<string, (Continuity.PhoneNotification N, UIElement Row)> _notifyByKey = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Keeps each notification's row (and the reply being typed in it) as long as the notification exists; only
+    /// new, changed or removed ones change. A battery or music update never wipes a half-written reply.
+    /// </summary>
+    private void RenderNotifications(IReadOnlyList<Continuity.PhoneNotification> list)
+    {
+        var rows = new List<UIElement>(list.Count);
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var n in list)
+        {
+            keep.Add(n.Key);
+            if (!_notifyByKey.TryGetValue(n.Key, out var known) || known.N != n)
+            {
+                known = (n, NotificationRow(n));
+                _notifyByKey[n.Key] = known;
+            }
+            rows.Add(known.Row);
+        }
+        foreach (var gone in _notifyByKey.Keys.Where(k => !keep.Contains(k)).ToList()) _notifyByKey.Remove(gone);
+        if (rows.SequenceEqual(_notifyRows.Children.Cast<UIElement>())) return;
         _notifyRows.Children.Clear();
-        foreach (var n in phone.Notifications.Take(5)) Fx.Add(_notifyRows, NotificationRow(n), 10);
+        foreach (var row in rows)
+        {
+            if (row is FrameworkElement fe) fe.Margin = new Thickness(0, _notifyRows.Children.Count == 0 ? 0 : 10, 0, 0);
+            _notifyRows.Children.Add(row);
+        }
     }
 
     private async Task TogglePhoneAudio()
@@ -407,14 +444,23 @@ internal sealed class HomePage : PageBase
         return $"{Fx.Bytes(t.Done)} of {Fx.Bytes(t.Total)} {dir} {t.Peer}{pct}";
     }
 
+    private string? _recentIds;
+
     private void RenderHistory()
     {
         // Recent files
         var recent = Host.History.Records().Take(8).ToList();
         _recentCard.Visibility = recent.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        _recent.Children.Clear();
-        foreach (var r in recent) _recent.Children.Add(RecentTile(r));
-        Anim.Stagger(_recent.Children.Cast<UIElement>(), 30);
+        // Only when the files themselves changed (a synced clip also changes History): no flicker, no replayed fade.
+        string ids = string.Join('|', recent.Select(r => r.Id + r.Status));
+        if (ids != _recentIds)
+        {
+            bool first = _recentIds is null;
+            _recentIds = ids;
+            _recent.Children.Clear();
+            foreach (var r in recent) _recent.Children.Add(RecentTile(r));
+            if (first) Anim.Stagger(_recent.Children.Cast<UIElement>(), 30);
+        }
 
         // Activity
         var today = DateTime.Today;

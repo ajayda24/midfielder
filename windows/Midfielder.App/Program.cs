@@ -12,6 +12,8 @@ internal static class Program
         {
             // Already running: hand over files to send (or just ask it to show itself) and exit.
             var files = SendArgs.Paths(args);
+            // We were just started by the user, so we may hand the foreground over: the window comes to the front.
+            NativeMethods.AllowSetForegroundWindow(NativeMethods.ASFW_ANY);
             // A notification action is delivered to the running instance by Windows itself.
             if (files.Count > 0 || !args.Contains("-ToastActivated")) SendToPipe.Forward(files.Count > 0 ? files : ["--show"]);
             return 0;

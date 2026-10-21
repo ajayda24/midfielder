@@ -47,7 +47,7 @@ internal sealed class RingOverlay : Window
         stack.VerticalAlignment = VerticalAlignment.Center;
         stack.HorizontalAlignment = HorizontalAlignment.Center;
         Content = stack;
-        Anim.Pulse(badge, true);
+        Anim.Pulse(badge, true, forever: true); // the overlay lives at most 30 s
 
         KeyDown += (_, e) =>
         {

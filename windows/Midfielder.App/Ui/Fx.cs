@@ -2,7 +2,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Effects;
 using Fluent = Wpf.Ui.Controls;
 
 namespace Midfielder.App.Ui;
@@ -22,6 +21,8 @@ internal static class Fx
     public static readonly Brush Ink = Freeze(Color.FromRgb(0x1B, 0x24, 0x21));
     public static readonly Brush Muted = Freeze(Color.FromRgb(0x5E, 0x6B, 0x66));
     public static readonly Brush Surface = Freeze(Colors.White);
+    /// <summary>The window's own background (behind the sidebar and the content layer).</summary>
+    public static readonly Brush WindowBackground = Freeze(Color.FromRgb(0xEE, 0xF2, 0xF0));
     public static readonly Brush Layer = Freeze(Color.FromArgb(0xF2, 0xF6, 0xF9, 0xF7));
     public static readonly Brush Outline = Freeze(Color.FromRgb(0xE1, 0xE8, 0xE4));
     public static readonly Brush Danger = Freeze(Color.FromRgb(0xB3, 0x26, 0x1E));
@@ -80,18 +81,23 @@ internal static class Fx
 
     // --- Surfaces -----------------------------------------------------------------------------------
 
-    /// <summary>A white rounded card that lifts a little on hover.</summary>
+    /// <summary>
+    /// The edge of a card: the outline, a shade darker at the bottom. Depth without a DropShadowEffect, which
+    /// re-renders and re-blurs offscreen on every frame a scrolling page repaints.
+    /// </summary>
+    public static readonly Brush CardEdge = Freeze(new LinearGradientBrush(Color.FromRgb(0xE1, 0xE8, 0xE4), Color.FromRgb(0xCF, 0xD9, 0xD4), 90));
+
+    /// <summary>A white rounded card that brightens a little on hover.</summary>
     public static Border Card(UIElement child, double padding = 20, bool lift = true)
     {
         var card = new Border
         {
             Background = Surface,
-            BorderBrush = Outline,
-            BorderThickness = new Thickness(1),
+            BorderBrush = CardEdge,
+            BorderThickness = new Thickness(1, 1, 1, 1.5),
             CornerRadius = new CornerRadius(12),
             Padding = new Thickness(padding),
             Child = child,
-            Effect = new DropShadowEffect { BlurRadius = 18, ShadowDepth = 2, Direction = 270, Opacity = 0.05, Color = Colors.Black },
         };
         if (lift) Anim.HoverLift(card);
         return card;

@@ -2,7 +2,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Effects;
 
 namespace Midfielder.App.Ui;
 
@@ -52,22 +51,26 @@ internal static class Anim
         foreach (var e in items) Enter(e, Math.Min(i++, max) * stepMs, 10);
     }
 
-    /// <summary>Slight lift and deeper shadow on hover.</summary>
+    private static readonly Color HoverColor = Color.FromRgb(0xF8, 0xFB, 0xF9);
+
+    /// <summary>
+    /// The card brightens on hover: a colour change only, so it costs nothing while a page scrolls under the
+    /// pointer (no transforms, no shadows).
+    /// </summary>
     public static void HoverLift(Border card)
     {
-        var t = new TranslateTransform();
-        card.RenderTransform = t;
+        bool tinted = false;
         card.MouseEnter += (_, _) =>
         {
-            if (!Enabled) return;
-            t.BeginAnimation(TranslateTransform.YProperty, To(-2, 160));
-            if (card.Effect is DropShadowEffect s && !s.IsFrozen) s.BeginAnimation(DropShadowEffect.OpacityProperty, To(0.11, 160));
+            if (card.Background is not SolidColorBrush { Color: var c } || c != Colors.White) return; // only white cards
+            tinted = true;
+            Tint(card, HoverColor, 120);
         };
         card.MouseLeave += (_, _) =>
         {
-            if (!Enabled) return;
-            t.BeginAnimation(TranslateTransform.YProperty, To(0, 200));
-            if (card.Effect is DropShadowEffect s && !s.IsFrozen) s.BeginAnimation(DropShadowEffect.OpacityProperty, To(0.05, 200));
+            if (!tinted) return;
+            tinted = false;
+            Tint(card, Colors.White, 160);
         };
     }
 
@@ -83,8 +86,11 @@ internal static class Anim
         target.BeginAnimation(property, To(to, ms), HandoffBehavior.SnapshotAndReplace);
     }
 
-    /// <summary>Gentle breathing for the "connected" dot.</summary>
-    public static void Pulse(UIElement e, bool on)
+    /// <summary>
+    /// A few gentle breaths (e.g. the "connected" dot when the phone connects), then still. Never endless unless
+    /// asked: an endless animation keeps WPF drawing at full frame rate for as long as the window exists.
+    /// </summary>
+    public static void Pulse(UIElement e, bool on, bool forever = false)
     {
         if (!on || !Enabled)
         {
@@ -95,7 +101,8 @@ internal static class Anim
         e.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(1100))
         {
             AutoReverse = true,
-            RepeatBehavior = RepeatBehavior.Forever,
+            RepeatBehavior = forever ? RepeatBehavior.Forever : new RepeatBehavior(3),
+            FillBehavior = FillBehavior.Stop,
             EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
         });
     }

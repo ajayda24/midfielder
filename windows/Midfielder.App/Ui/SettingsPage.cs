@@ -290,8 +290,15 @@ internal sealed class SettingsPage : PageBase
 
     private void OnStatus() => Post(RenderDevices);
 
+    private string? _devicesKey;
+
     private void RenderDevices()
     {
+        // Status changes after every transfer and ping: rebuild only when the devices or who's connected changed.
+        string key = string.Join('|', Host.PairedDevices.Select(d => d.Fingerprint.Value + d.Name)) + "#" +
+                     string.Join('|', Host.ConnectedDevices.Select(d => d.Fingerprint.Value));
+        if (key == _devicesKey) return;
+        _devicesKey = key;
         _devices.Children.Clear();
         var connected = Host.ConnectedDevices.Select(d => d.Fingerprint).ToHashSet();
         var pair = Fx.Primary(Host.PairedDevices.Count == 0 ? "Pair a phone" : "Pair another phone", Fluent.SymbolRegular.QrCode24, Host.ShowPairing);

@@ -29,6 +29,7 @@ internal abstract class PageBase : UserControl, IDisposable
                 Focusable = false,
             };
             Content = Scroller;
+            SmoothScroll.Attach(Scroller);
         }
     }
 
@@ -71,11 +72,12 @@ internal abstract class PageBase : UserControl, IDisposable
         return t;
     }
 
-    /// <summary>Adds a block to the column with standard spacing, sliding it in with a small stagger.</summary>
+    /// <summary>Adds a block to the column with standard spacing; the first few slide in with a small stagger.</summary>
     protected void Add(UIElement block, double gap = 16)
     {
         Fx.Add(Body, block, gap);
-        Anim.Enter(block, Math.Min(Body.Children.Count, 8) * 35);
+        // Only what's on screen when the page opens moves; the rest is simply there (cheaper, no late pop-in).
+        if (Body.Children.Count <= 4) Anim.Enter(block, Body.Children.Count * 35);
     }
 
     protected virtual void OnDispose() { }

@@ -137,18 +137,6 @@ internal static partial class NativeMethods
         SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, ref state, (uint)Marshal.SizeOf<PROCESS_POWER_THROTTLING_STATE>());
     }
 
-    private const int DWMWA_CLOAK = 13;
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
-
-    /// <summary>Hides a window from the screen without hiding it from layout (no white flash before its first frame).</summary>
-    public static void Cloak(IntPtr hwnd, bool cloaked)
-    {
-        int value = cloaked ? 1 : 0;
-        _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, ref value, sizeof(int));
-    }
-
     // --- Auto-lock and the screen-edge drop -----------------------------------------------------
 
     [LibraryImport("user32.dll", SetLastError = true)]
@@ -192,4 +180,88 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+
+    // --- Taskbar identity of a window -------------------------------------------------------------
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROPERTYKEY
+    {
+        public Guid FormatId;
+        public uint PropertyId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROPVARIANT
+    {
+        public ushort Vt;
+        public ushort Reserved1;
+        public ushort Reserved2;
+        public ushort Reserved3;
+        public IntPtr Value;
+        public IntPtr Value2;
+    }
+
+    [ComImport]
+    [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetAt(uint index, out PROPERTYKEY key);
+        [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+        [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+        [PreserveSig] int Commit();
+    }
+
+    private static readonly Guid AppUserModelProps = new("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+    private static readonly Guid IID_IPropertyStore = new("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+    private const ushort VT_LPWSTR = 31;
+
+    [LibraryImport("shell32.dll")]
+    private static partial int SHGetPropertyStoreForWindow(IntPtr hwnd, in Guid riid, out IntPtr store);
+
+    /// <summary>
+    /// Gives the window its own taskbar identity (AppUserModel ID, relaunch command, icon and name), so its taskbar
+    /// button always shows Midfielder's icon, also when the exe runs with the sparse package's identity.
+    /// </summary>
+    public static void SetWindowAppId(IntPtr hwnd, string? exePath)
+    {
+        if (hwnd == IntPtr.Zero || exePath is null) return;
+        try
+        {
+            if (SHGetPropertyStoreForWindow(hwnd, in IID_IPropertyStore, out IntPtr ptr) != 0 || ptr == IntPtr.Zero) return;
+            var store = (IPropertyStore)Marshal.GetObjectForIUnknown(ptr);
+            Marshal.Release(ptr);
+            Set(store, 5, "Midfielder.App");                    // System.AppUserModel.ID
+            Set(store, 2, $"\"{exePath}\" --show");             // RelaunchCommand
+            Set(store, 3, $"{exePath},0");                      // RelaunchIconResource
+            Set(store, 4, "Midfielder");                        // RelaunchDisplayNameResource
+            store.Commit();
+            Marshal.ReleaseComObject(store);
+        }
+        catch (Exception e) when (e is COMException or InvalidCastException)
+        {
+            AppLog.Info("Couldn't set the window's taskbar identity: " + e.Message);
+        }
+    }
+
+    private static void Set(IPropertyStore store, uint id, string value)
+    {
+        var key = new PROPERTYKEY { FormatId = AppUserModelProps, PropertyId = id };
+        var v = new PROPVARIANT { Vt = VT_LPWSTR, Value = Marshal.StringToCoTaskMemUni(value) };
+        try
+        {
+            store.SetValue(ref key, ref v);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(v.Value);
+        }
+    }
+
+    public const uint ASFW_ANY = 0xFFFFFFFF;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool AllowSetForegroundWindow(uint processId);
 }
