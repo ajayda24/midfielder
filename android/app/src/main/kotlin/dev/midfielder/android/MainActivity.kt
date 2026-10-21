@@ -338,6 +338,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_CAMERA && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startScan()
         (tab as? SettingsTab)?.renderChecklist()
+        if (requestCode == REQ_FEATURES) (tab as? SettingsTab)?.onPermissionsResult()
         (tab as? HomeTab)?.refreshSetup()
     }
 
@@ -367,6 +368,7 @@ class MainActivity : AppCompatActivity() {
             Triple(TAB_DEVELOPER, "Developer", R.drawable.ic_code),
         )
         private const val STATE_TAB = "tab"
+        const val REQ_FEATURES = 20
         private const val REQ_SCAN = 1
         private const val REQ_PICK_FILES = 2
         private const val REQ_CAMERA = 3

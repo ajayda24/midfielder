@@ -38,6 +38,10 @@ class SecureFiles(context: Context) {
         }.getOrNull()
     }
 
+    fun delete(name: String) {
+        File(dir, name).delete()
+    }
+
     fun write(name: String, data: ByteArray) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
@@ -196,7 +200,44 @@ class AppStorage(context: Context) {
         get() = prefs.getBoolean("audio_pc_to_phone", true)
         set(v) = prefs.edit().putBoolean("audio_pc_to_phone", v).apply()
 
+    /** Calls on the PC: caller ID (master switch). */
+    var featCalls: Boolean
+        get() = prefs.getBoolean("feat_calls", false)
+        set(v) = prefs.edit().putBoolean("feat_calls", v).apply()
+
+    /** Answer, decline and end calls from the PC. */
+    var callsActions: Boolean
+        get() = prefs.getBoolean("calls_actions", true)
+        set(v) = prefs.edit().putBoolean("calls_actions", v).apply()
+
+    /** Show contact names and photos (needs contacts access). */
+    var callsContacts: Boolean
+        get() = prefs.getBoolean("calls_contacts", true)
+        set(v) = prefs.edit().putBoolean("calls_contacts", v).apply()
+
+    /** Decline with a quick text from the PC (needs SMS access). */
+    var callsSms: Boolean
+        get() = prefs.getBoolean("calls_sms", false)
+        set(v) = prefs.edit().putBoolean("calls_sms", v).apply()
+
+    var callsSmsText: String
+        get() = prefs.getString("calls_sms_text", null) ?: "Can't talk now, I'll call you back."
+        set(v) = prefs.edit().putString("calls_sms_text", v).apply()
+
+    /** Lock the PC when this phone walks away (Bluetooth beacon). */
+    var featPresence: Boolean
+        get() = prefs.getBoolean("feat_presence", false)
+        set(v) = prefs.edit().putBoolean("feat_presence", v).apply()
+
+    /** The beacon key the PC sent (encrypted at rest), or null before it has. */
+    var presenceKey: ByteArray?
+        get() = files.read(PRESENCE_KEY)
+        set(v) {
+            if (v == null) files.delete(PRESENCE_KEY) else files.write(PRESENCE_KEY, v)
+        }
+
     private companion object {
+        const val PRESENCE_KEY = "presence.key.enc"
         const val IDENTITY = "identity.p12.enc"
         const val DEVICES = "devices.json.enc"
 

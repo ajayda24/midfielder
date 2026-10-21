@@ -105,8 +105,18 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         fun changed(needsAccess: Boolean = false) {
             SyncEngine.current?.features?.apply()
             if (needsAccess && !PhoneNotificationListener.isGranted(host)) openNotificationAccess()
+            // Runtime permissions for what was just switched on (calls, the beacon); the rest re-applies on grant.
+            val missing = runtimePermissionsMissing()
+            if (missing.isNotEmpty()) host.requestPermissions(missing.toTypedArray(), dev.midfielder.android.MainActivity.REQ_FEATURES)
             renderFeatures()
         }
+        fun grantPrompt(parent: LinearLayout, why: String) = parent.addView(ui.listRow(
+            "Permission needed", why,
+            ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer),
+            below = ui.button("Grant", Ui.Button.TONAL) {
+                host.requestPermissions(runtimePermissionsMissing().toTypedArray(), dev.midfielder.android.MainActivity.REQ_FEATURES)
+            },
+        ))
 
         /** Adds a feature card; returns its options area (empty and hidden while the feature is off). */
         fun card(icon: Int, title: String, description: String, on: Boolean, capability: String, set: (Boolean) -> Unit): LinearLayout {
@@ -193,6 +203,66 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                 storage.audioPhoneToPc, { storage.audioPhoneToPc = it })
             option(audio, "PC audio on phone", "Everything your PC plays, over Wi-Fi", storage.audioPcToPhone, { storage.audioPcToPhone = it })
         }
+
+        val calls = card(R.drawable.ic_call, "Calls on PC", "See who's calling on your PC, answer or decline from there",
+            storage.featCalls, Features.CALL) { storage.featCalls = it }
+        if (storage.featCalls) {
+            if (dev.midfielder.android.CallBridge.missing(host, storage).isNotEmpty()) grantPrompt(calls, "Phone, call log and the options below need Android's permission")
+            option(calls, "Answer and decline from PC", "Buttons in the PC's call popup", storage.callsActions, { storage.callsActions = it })
+            option(calls, "Contact names and photos", "Looked up on this phone, only for the caller", storage.callsContacts, { storage.callsContacts = it })
+            option(calls, "Quick text reply", "Decline with a message: \"${storage.callsSmsText}\"", storage.callsSms, { storage.callsSms = it })
+            if (storage.callsSms) {
+                calls.addView(ui.button("Edit message", Ui.Button.TEXT) { editSmsText() }, ui.wrap().apply { marginStart = ui.dp(4) })
+            }
+        }
+
+        val lock = card(R.drawable.ic_lock, "Lock PC when I walk away", "A tiny Bluetooth signal tells your PC you're near; it locks when you leave",
+            storage.featPresence, Features.PRESENCE) { storage.featPresence = it }
+        if (storage.featPresence) {
+            val beacon = SyncEngine.current?.features?.beacon
+            val text = when {
+                !dev.midfielder.android.PresenceBeacon.canAdvertise(host) -> null
+                pc?.presenceReady != true -> "Waiting for your PC: turn on the same feature in Midfielder on the PC"
+                beacon?.problem != null -> beacon.problem
+                else -> "Beacon on. Set how far is \"away\" on your PC"
+            }
+            if (text == null) grantPrompt(lock, "\"Nearby devices\" lets Midfielder send the Bluetooth signal")
+            else lock.addView(ui.supporting(text).apply { setPadding(ui.dp(4), ui.dp(8), 0, ui.dp(12)) })
+        }
+    }
+
+    /** Runtime permissions the switched-on features still need. */
+    private fun runtimePermissionsMissing(): List<String> = buildList {
+        addAll(dev.midfielder.android.CallBridge.missing(host, storage))
+        if (storage.featPresence) addAll(dev.midfielder.android.PresenceBeacon.permissions.filterNot { dev.midfielder.android.CallBridge.granted(host, it) })
+    }
+
+    /** A permission answer came back: start what can start now and redraw. */
+    fun onPermissionsResult() {
+        SyncEngine.current?.features?.apply()
+        renderFeatures()
+    }
+
+    private fun editSmsText() {
+        val input = android.widget.EditText(host).apply {
+            setText(storage.callsSmsText)
+            setSelection(text.length)
+        }
+        val box = android.widget.FrameLayout(host).apply {
+            setPadding(ui.dp(24), ui.dp(8), ui.dp(24), 0)
+            addView(input)
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+            .setTitle("Quick text reply")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val t = input.text.toString().trim()
+                if (t.isNotEmpty()) storage.callsSmsText = t
+                SyncEngine.current?.features?.apply()
+                renderFeatures()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun openNotificationAccess() {
