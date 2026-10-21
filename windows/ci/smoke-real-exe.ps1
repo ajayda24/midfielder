@@ -22,6 +22,8 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     public static List<IntPtr> Windows(uint pid) {
         var list = new List<IntPtr>();
@@ -40,6 +42,29 @@ public static class Win {
 '@
 [Win]::SetProcessDPIAware() | Out-Null
 New-Item -ItemType Directory -Force $Screens | Out-Null
+
+# Screenshot of a window; returns the share of near-white pixels (a blank window is ~100%).
+function Snap([IntPtr] $h, [string] $name, [string] $label) {
+    $r = New-Object Win+RECT
+    [Win]::GetWindowRect($h, [ref]$r) | Out-Null
+    $w = [Math]::Max(1, $r.Right - $r.Left); $hgt = [Math]::Max(1, $r.Bottom - $r.Top)
+    $bmp = New-Object System.Drawing.Bitmap $w, $hgt
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
+    $g.Dispose()
+    $bmp.Save((Join-Path $Screens $name), [System.Drawing.Imaging.ImageFormat]::Png)
+    $white = 0; $total = 0
+    for ($y = 0; $y -lt $hgt; $y += 6) {
+        for ($x = 0; $x -lt $w; $x += 6) {
+            $c = $bmp.GetPixel($x, $y); $total++
+            if ($c.R -ge 250 -and $c.G -ge 250 -and $c.B -ge 250) { $white++ }
+        }
+    }
+    $bmp.Dispose()
+    $share = [Math]::Round(100.0 * $white / [Math]::Max(1, $total), 1)
+    Write-Host "window '$label' at $($r.Left),$($r.Top) ${w}x${hgt}: $share% white -> $name"
+    return $share
+}
 
 $proc = Start-Process -FilePath $Exe -PassThru
 $problems = @()
@@ -63,28 +88,59 @@ try {
         $title = [Win]::Title($h)
         [Win]::SetForegroundWindow($h) | Out-Null
         Start-Sleep -Milliseconds 800
-        $r = New-Object Win+RECT
-        [Win]::GetWindowRect($h, [ref]$r) | Out-Null
-        $w = [Math]::Max(1, $r.Right - $r.Left); $hgt = [Math]::Max(1, $r.Bottom - $r.Top)
-        $bmp = New-Object System.Drawing.Bitmap $w, $hgt
-        $g = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
-        $g.Dispose()
-        $name = "windows-real-exe-$i.png"
-        $bmp.Save((Join-Path $Screens $name), [System.Drawing.Imaging.ImageFormat]::Png)
-        # Share of (near-)white pixels, sampled on a grid.
-        $white = 0; $total = 0
-        for ($y = 0; $y -lt $hgt; $y += 6) {
-            for ($x = 0; $x -lt $w; $x += 6) {
-                $c = $bmp.GetPixel($x, $y); $total++
-                if ($c.R -ge 250 -and $c.G -ge 250 -and $c.B -ge 250) { $white++ }
+        $share = Snap $h "windows-real-exe-$i.png" $title
+        if ($share -gt 97) { $problems += "window '$title' is blank ($share% white)" }
+        # The taskbar button draws the window's icon: both sizes must be set.
+        if ([Win]::SendMessage($h, 0x7F, [IntPtr]1, [IntPtr]::Zero) -eq [IntPtr]::Zero) { $problems += "window '$title' has no icon" }
+        $i++
+    }
+
+    # A taskbar button for the main window (UI Automation on the taskbar; reported only where there is one).
+    $main = $windows | Where-Object { [Win]::Title($_) -eq 'Midfielder' } | Select-Object -First 1
+    try {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $tray = $root.FindFirst([System.Windows.Automation.TreeScope]::Children,
+            (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'Shell_TrayWnd')))
+        if ($null -eq $tray) { Write-Host 'taskbar: none on this runner (not checked)' }
+        else {
+            $buttons = $tray.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.Name -like '*Midfielder*' }
+            if (@($buttons).Count -gt 0) { Write-Host "taskbar: button found ($(@($buttons)[0].Current.Name))" }
+            else { $problems += 'no taskbar button for Midfielder' }
+        }
+    }
+    catch { Write-Host "taskbar: couldn't check ($($_.Exception.Message))" }
+
+    # Reopen like a user does: close the window (it hides; the app stays in the tray), let it go idle (efficiency
+    # mode), then start Midfielder again: the running one must show its window at once, painted.
+    if ($null -ne $main) {
+        [Win]::PostMessage($main, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+        Start-Sleep -Seconds 2
+        $proc.Refresh()
+        if ($proc.HasExited) { $problems += 'closing the window exited the app (it should stay in the tray)' }
+        elseif (@([Win]::Windows([uint32]$proc.Id) | Where-Object { $_ -eq $main }).Count -gt 0) { $problems += 'closing the window did not hide it' }
+        else {
+            Start-Sleep -Seconds 15
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            Start-Process -FilePath $Exe | Out-Null
+            $shown = $null
+            while ($clock.ElapsedMilliseconds -lt 5000 -and $null -eq $shown) {
+                Start-Sleep -Milliseconds 25
+                $shown = [Win]::Windows([uint32]$proc.Id) | Where-Object { [Win]::Title($_) -eq 'Midfielder' } | Select-Object -First 1
+            }
+            $ms = $clock.ElapsedMilliseconds
+            if ($null -eq $shown) { $problems += 'starting Midfielder again did not show the window' }
+            else {
+                # Early frame first (would catch a white flash), then the settled one.
+                $early = Snap $shown 'windows-real-exe-reopen-early.png' 'reopen (early)'
+                Start-Sleep -Milliseconds 600
+                $late = Snap $shown 'windows-real-exe-reopen.png' 'reopen'
+                Write-Host "Reopen: window visible after $ms ms (includes starting the second exe)"
+                if ($ms -gt 2500) { $problems += "reopening took $ms ms" }
+                if ($early -gt 97 -or $late -gt 97) { $problems += "the reopened window was blank ($early% / $late% white)" }
             }
         }
-        $bmp.Dispose()
-        $share = [Math]::Round(100.0 * $white / [Math]::Max(1, $total), 1)
-        Write-Host "window '$title' at $($r.Left),$($r.Top) ${w}x${hgt}: $share% white -> $name"
-        if ($share -gt 97) { $problems += "window '$title' is blank ($share% white)" }
-        $i++
     }
 }
 finally {
