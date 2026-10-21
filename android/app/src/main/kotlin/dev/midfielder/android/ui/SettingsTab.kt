@@ -185,12 +185,9 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         val battery = card(R.drawable.ic_battery, "Battery sharing", "Your PC's battery here, this phone's on the PC",
             Features.BATTERY, { storage.featBattery }) { storage.featBattery = it }
         option(battery, "PC battery alerts", "When the PC is charged or low", storage.batteryAlerts) { storage.batteryAlerts = it }
-        // "Charged at" label, then short chips: three long chips don't fit a narrow phone.
-        val chips = ui.horizontal().apply {
-            setPadding(ui.dp(4), 0, 0, ui.dp(8))
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            addView(ui.supporting("Alert at"), ui.wrap())
-        }
+        // A label above short chips: label and chips in one row don't fit a narrow phone.
+        val chips = ui.horizontal().apply { setPadding(ui.dp(4), 0, 0, ui.dp(8)) }
+        conditional(battery, ui.supporting("Charged alert at").apply { setPadding(ui.dp(4), ui.dp(4), 0, ui.dp(4)) }) { storage.batteryAlerts }
         val levels = listOf(80, 90, 100).map { level ->
             ui.filterChip("$level%", storage.batteryFullAt == level).apply {
                 setOnClickListener {
@@ -198,7 +195,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                     SyncEngine.current?.features?.apply()
                     refresh()
                 }
-            }.also { chips.addView(it, ui.wrap(if (level == 80) 12 else 8)) }
+            }.also { chips.addView(it, ui.wrap(if (level == 80) 0 else 8)) }
         }
         dynamic += { levels.forEachIndexed { i, chip -> chip.isChecked = storage.batteryFullAt == listOf(80, 90, 100)[i] } }
         conditional(battery, chips) { storage.batteryAlerts }
