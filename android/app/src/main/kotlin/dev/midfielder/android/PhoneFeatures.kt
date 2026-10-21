@@ -9,6 +9,9 @@ import dev.midfielder.core.feature.BatteryAlerts
 import dev.midfielder.core.feature.Features
 import dev.midfielder.core.net.MidfielderNode
 import dev.midfielder.core.net.PeerSession
+import dev.midfielder.proto.AudioRequest
+import dev.midfielder.proto.AudioRoute
+import dev.midfielder.proto.AudioStop
 import dev.midfielder.proto.BatteryStatus
 import dev.midfielder.proto.Envelope
 import dev.midfielder.proto.MediaCommand
@@ -19,7 +22,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * The optional features on the phone: notifications and music on the PC, battery sharing, find my phone. Every one
+ * The optional features on the phone: notifications and music on the PC, battery sharing, find my phone, audio
+ * between the devices. Every one
  * has its own switch in [AppStorage]; [apply] starts what is on and stops what is off (receivers unregistered,
  * listener component disabled, nothing sent), and tells the PC which features are on.
  */
@@ -30,8 +34,15 @@ class PhoneFeatures(
     private val notifs: Notifications,
 ) {
     /** The connected PC as the UI shows it. */
-    data class Pc(val name: String? = null, val battery: BatteryStatus? = null, val capabilities: Set<String> = emptySet()) {
+    data class Pc(
+        val name: String? = null,
+        val battery: BatteryStatus? = null,
+        val capabilities: Set<String> = emptySet(),
+        /** The PC's sound is playing on this phone. */
+        val audioHere: Boolean = false,
+    ) {
         val canRing: Boolean get() = Features.RING in capabilities
+        val canAudio: Boolean get() = Features.AUDIO in capabilities
     }
 
     private val app = context.applicationContext
@@ -45,6 +56,7 @@ class PhoneFeatures(
     }
     private val phoneMedia = PhoneMedia(app) { node.sendFeature(Features.MEDIA, Envelope(media_state = it)) }
     private val pcMedia = PcMedia(app, notifs) { sendMediaCommand(it) }
+    private val pcAudio = PcAudioPlayer(app, node, notifs) { playing -> _pc.value = _pc.value.copy(audioHere = playing) }
     private val alerts = BatteryAlerts()
     private var batteryReceiver: BroadcastReceiver? = null
 
@@ -67,6 +79,7 @@ class PhoneFeatures(
         }
         if (!(storage.featMedia && storage.mediaPcToPhone)) pcMedia.clear()
         if (!storage.featRing) ringer.stop()
+        if (!(storage.featAudio && storage.audioPcToPhone)) stopPcAudio()
         alerts.fullAt = storage.batteryFullAt
         node.setFeatures(enabled())
         refreshPc()
@@ -77,6 +90,7 @@ class PhoneFeatures(
         if (storage.featBattery) add(Features.BATTERY)
         if (storage.featRing) add(Features.RING)
         if (storage.featMedia) add(Features.MEDIA)
+        if (storage.featAudio) add(Features.AUDIO)
     }
 
     /** True when a switch is on but Android hasn't granted notification access yet. */
@@ -98,7 +112,10 @@ class PhoneFeatures(
 
     fun onPeerDisconnected() {
         refreshPc()
-        if (node.connectedPeers.value.isEmpty()) pcMedia.clear()
+        if (node.connectedPeers.value.isEmpty()) {
+            pcMedia.clear()
+            pcAudio.stop()
+        }
     }
 
     fun onMessage(from: PeerSession, env: Envelope) {
@@ -108,6 +125,8 @@ class PhoneFeatures(
         val ring = env.ring_request
         val mediaState = env.media_state
         val mediaCommand = env.media_command
+        val audioOffer = env.audio_offer
+        val audioStop = env.audio_stop
         when {
             env.features_changed != null -> {
                 refreshPc()
@@ -121,12 +140,31 @@ class PhoneFeatures(
             }
             mediaState != null -> if (storage.featMedia && storage.mediaPcToPhone) pcMedia.show(mediaState)
             mediaCommand != null -> if (phoneMusicOn()) phoneMedia.command(mediaCommand)
+            audioOffer != null -> if (storage.featAudio && storage.audioPcToPhone) {
+                pcAudio.play(from.peer.fingerprint, audioOffer)
+            } else {
+                from.trySend(Envelope(audio_stop = AudioStop(stream_id = audioOffer.stream_id, reason = "off on the phone")))
+            }
+            audioStop != null -> pcAudio.stop(audioStop.stream_id)
         }
     }
 
     /** "Ring PC" on the phone; false if no connected PC can ring. */
     fun ringPc(start: Boolean = true): Boolean =
         storage.featRing && node.sendFeature(Features.RING, Envelope(ring_request = RingRequest(start = start))) > 0
+
+    /** Asks the PC to start or stop an audio route; false if no connected PC has Audio on. */
+    fun requestAudio(route: AudioRoute, start: Boolean): Boolean {
+        if (!storage.featAudio) return false
+        return node.sendFeature(Features.AUDIO, Envelope(audio_request = AudioRequest(route = route, start = start))) > 0
+    }
+
+    /** Stops the PC's sound here and tells the PC, so it stops capturing. */
+    fun stopPcAudio() {
+        val id = pcAudio.streamId ?: return
+        node.sendFeature(Features.AUDIO, Envelope(audio_stop = AudioStop(stream_id = id, reason = "stopped on the phone")))
+        pcAudio.stop(id)
+    }
 
     fun sendMediaCommand(cmd: MediaCommand) {
         if (storage.featMedia) node.sendFeature(Features.MEDIA, Envelope(media_command = cmd))
@@ -137,6 +175,7 @@ class PhoneFeatures(
         phoneMedia.stop()
         pcMedia.clear()
         ringer.stop()
+        pcAudio.close()
     }
 
     private fun onPcBattery(b: BatteryStatus) {
@@ -154,7 +193,7 @@ class PhoneFeatures(
         val peer = node.connectedPeers.value.firstOrNull()
         val caps = peer?.let { node.session(it.fingerprint)?.capabilities }.orEmpty()
         val battery = if (peer != null && Features.BATTERY in caps && storage.featBattery) _pc.value.battery else null
-        _pc.value = Pc(peer?.name, battery, caps)
+        _pc.value = Pc(peer?.name, battery, caps, audioHere = pcAudio.isPlaying)
     }
 
     // ---- Battery -------------------------------------------------------------------------------------

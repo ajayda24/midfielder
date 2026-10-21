@@ -38,6 +38,9 @@ class HomeTab(host: MainActivity) : Tab(host) {
     private lateinit var pairButton: MaterialButton
     private lateinit var pcBattery: TextView
     private lateinit var ringButton: MaterialButton
+    private lateinit var audioRow: LinearLayout
+    private lateinit var pcAudioButton: MaterialButton
+    private lateinit var phoneAudioButton: MaterialButton
     private lateinit var setupCard: MaterialCardView
     private lateinit var setupText: TextView
     private lateinit var transfersCard: MaterialCardView
@@ -94,6 +97,20 @@ class HomeTab(host: MainActivity) : Tab(host) {
             android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
         }.apply { visibility = View.GONE }
         hero.body.addView(ringButton, ui.matchWidth(12))
+        // Audio between the devices: the PC's sound here (Wi-Fi), this phone's sound on the PC (Bluetooth).
+        audioRow = ui.horizontal().apply { visibility = View.GONE }
+        pcAudioButton = ui.button("PC audio here", Ui.Button.TONAL, R.drawable.ic_headphones) { togglePcAudio() }
+        phoneAudioButton = ui.button("Play on PC", Ui.Button.TONAL, R.drawable.ic_music) {
+            val sent = SyncEngine.current?.features?.requestAudio(dev.midfielder.proto.AudioRoute.AUDIO_ROUTE_PHONE_TO_PC, start = true) == true
+            android.widget.Toast.makeText(
+                host,
+                if (sent) "Your PC is connecting to this phone over Bluetooth" else "Turn on Audio in Midfielder on your PC too",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+        audioRow.addView(pcAudioButton, ui.weight())
+        audioRow.addView(phoneAudioButton, ui.weight(startDp = 8))
+        hero.body.addView(audioRow, ui.matchWidth(8))
         root.addView(hero.card, ui.matchWidth(0))
 
         // Setup banner (only while something is missing).
@@ -245,6 +262,22 @@ class HomeTab(host: MainActivity) : Tab(host) {
         }
         val ringOn = dev.midfielder.android.AppStorage(host).featRing
         ringButton.visibility = if (ringOn && pc.canRing) View.VISIBLE else View.GONE
+        val storage = dev.midfielder.android.AppStorage(host)
+        val audioOn = storage.featAudio && pc.canAudio
+        pcAudioButton.visibility = if (audioOn && storage.audioPcToPhone) View.VISIBLE else View.GONE
+        phoneAudioButton.visibility = if (audioOn && storage.audioPhoneToPc) View.VISIBLE else View.GONE
+        audioRow.visibility = if (pcAudioButton.visibility == View.VISIBLE || phoneAudioButton.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        pcAudioButton.text = if (pc.audioHere) "Stop PC audio" else "PC audio here"
+    }
+
+    private fun togglePcAudio() {
+        val features = SyncEngine.current?.features ?: return
+        if (features.pc.value.audioHere) {
+            features.stopPcAudio()
+            return
+        }
+        val sent = features.requestAudio(dev.midfielder.proto.AudioRoute.AUDIO_ROUTE_PC_TO_PHONE, start = true)
+        if (!sent) android.widget.Toast.makeText(host, "Turn on Audio in Midfielder on your PC too", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun renderTransfers(list: List<ActiveTransfer>) {

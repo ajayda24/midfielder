@@ -90,7 +90,26 @@ device stops it for the pair. Unknown capabilities and messages are ignored.
 | `ring` | `RingRequest` (`start = false` stops; the receiver also stops on its own after 30 s) | both ways |
 | `media` | `MediaState` (what plays on the sender; `active = false` clears; art omitted when `art_unchanged`) | both ways |
 |  | `MediaCommand` (controls the receiver's current player) | both ways |
+| `audio` | `AudioRequest(route, start)` (asks the other side to start or stop a route) | both ways |
+|  | `AudioOffer(stream_id, sample_rate, channels)`, `AudioStop(stream_id, reason)` | listener → dialer, `AudioStop` both ways |
 
 Limits: notification title 200 and text 1,000 characters, icon ≤ 8 KiB PNG, at most 3 buttons; album art ≤ 64 KiB
 JPEG (300 px). Senders coalesce: notifications are sent only when title or text change, media state is debounced
 (250–300 ms).
+
+### Audio streams
+
+Two routes, each behind its own switch:
+
+- **Phone → PC** (`AUDIO_ROUTE_PHONE_TO_PC`): plain Bluetooth A2DP. The PC opens an `AudioPlaybackConnection` to the
+  paired phone and becomes its speaker; no audio crosses Midfielder's connections. `AudioRequest` only lets the
+  phone ask the PC to connect or disconnect.
+- **PC → phone** (`AUDIO_ROUTE_PC_TO_PHONE`): the PC (the listener) captures what it plays and sends
+  `AudioOffer`. The phone (the dialer) opens a data connection whose first frame is `AudioOpen(stream_id)`, then
+  reads `AudioChunk(seq, pcm)` frames: 20 ms of interleaved little-endian PCM16 each, on a steady clock (silence
+  when nothing plays). The stream ends when either side closes the connection or sends `AudioStop`. A dialer that
+  has the route off answers an offer with `AudioStop`.
+
+Players keep the delay bounded: start after ~100 ms, never queue more than ~200 ms, and drop late audio rather
+than fall behind.
+

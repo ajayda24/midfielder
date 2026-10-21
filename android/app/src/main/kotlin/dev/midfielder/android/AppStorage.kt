@@ -181,6 +181,21 @@ class AppStorage(context: Context) {
         get() = prefs.getBoolean("media_pc_to_phone", true)
         set(v) = prefs.edit().putBoolean("media_pc_to_phone", v).apply()
 
+    /** Audio between the devices (master switch): this phone's sound on the PC, the PC's sound here. */
+    var featAudio: Boolean
+        get() = prefs.getBoolean("feat_audio", false)
+        set(v) = prefs.edit().putBoolean("feat_audio", v).apply()
+
+    /** Offer "Play on PC": the PC becomes this phone's Bluetooth speaker. */
+    var audioPhoneToPc: Boolean
+        get() = prefs.getBoolean("audio_phone_to_pc", true)
+        set(v) = prefs.edit().putBoolean("audio_phone_to_pc", v).apply()
+
+    /** Play the PC's sound on this phone (over Wi-Fi). */
+    var audioPcToPhone: Boolean
+        get() = prefs.getBoolean("audio_pc_to_phone", true)
+        set(v) = prefs.edit().putBoolean("audio_pc_to_phone", v).apply()
+
     private companion object {
         const val IDENTITY = "identity.p12.enc"
         const val DEVICES = "devices.json.enc"

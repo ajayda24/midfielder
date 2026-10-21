@@ -28,6 +28,9 @@ class Notifications(context: Context) {
                 NotificationChannel(PC_MEDIA, "Music playing on your PC", NotificationManager.IMPORTANCE_LOW).apply {
                     setShowBadge(false)
                 },
+                NotificationChannel(PC_AUDIO, "PC audio on this phone", NotificationManager.IMPORTANCE_LOW).apply {
+                    setShowBadge(false)
+                },
             ),
         )
     }
@@ -183,6 +186,28 @@ class Notifications(context: Context) {
 
     fun cancelPcMedia() = nm.cancel(PC_MEDIA_ID)
 
+    /** While the PC's sound plays here: says so, with Stop. */
+    fun pcAudio() {
+        val stop = PendingIntent.getBroadcast(app, PC_AUDIO_ID, Intent(app, PcAudioStopReceiver::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(app, PC_AUDIO_ID, Intent(app, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        nm.notify(
+            PC_AUDIO_ID,
+            Notification.Builder(app, PC_AUDIO)
+                .setSmallIcon(R.drawable.ic_headphones)
+                .setColor(ACCENT)
+                .setContentTitle("PC audio on this phone")
+                .setContentText("Everything your PC plays comes out here")
+                .setContentIntent(open)
+                .setOngoing(true)
+                .setShowWhen(false)
+                .setOnlyAlertOnce(true)
+                .addAction(Notification.Action.Builder(null, "Stop", stop).build())
+                .build(),
+        )
+    }
+
+    fun cancelPcAudio() = nm.cancel(PC_AUDIO_ID)
+
     companion object {
         const val STATUS_ID = 1
         private const val STATUS = "status"
@@ -192,6 +217,8 @@ class Notifications(context: Context) {
         private const val FIND = "find"
         private const val ALERTS = "alerts"
         private const val PC_MEDIA = "pc_media"
+        private const val PC_AUDIO = "pc_audio"
+        private const val PC_AUDIO_ID = 5
         private const val RING_ID = 3
         private const val BATTERY_ID = 4
         private const val PC_MEDIA_ID = 100

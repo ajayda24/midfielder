@@ -152,6 +152,10 @@
             android:name=".RingStopReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".PcAudioStopReceiver"
+            android:exported="false" />
+
         <!-- "Save to gallery" on the image-from-PC notification. -->
         <receiver
             android:name=".SaveImageReceiver"

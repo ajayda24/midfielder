@@ -185,6 +185,14 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             if (storage.mediaPhoneToPc && !granted) accessPrompt(music, "Needed to see what's playing on this phone")
             option(music, "PC music on phone", "In this phone's media controls and lock screen", storage.mediaPcToPhone, { storage.mediaPcToPhone = it })
         }
+
+        val audio = card(R.drawable.ic_headphones, "Audio", "Hear this phone on your PC's speakers, or your PC on this phone",
+            storage.featAudio, Features.AUDIO) { storage.featAudio = it }
+        if (storage.featAudio) {
+            option(audio, "Phone audio on PC", "Your PC becomes this phone's Bluetooth speaker. Pair them over Bluetooth once",
+                storage.audioPhoneToPc, { storage.audioPhoneToPc = it })
+            option(audio, "PC audio on phone", "Everything your PC plays, over Wi-Fi", storage.audioPcToPhone, { storage.audioPcToPhone = it })
+        }
     }
 
     private fun openNotificationAccess() {
