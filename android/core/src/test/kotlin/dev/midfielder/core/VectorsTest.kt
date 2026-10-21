@@ -87,6 +87,27 @@ class VectorsTest {
         assertEquals(v("frame.audio_offer"), frameHex(offer))
         val chunk = Envelope(audio_chunk = dev.midfielder.proto.AudioChunk(7, byteArrayOf(0, 1, -1, 0x7f).toByteString()))
         assertEquals(v("frame.audio_chunk"), frameHex(chunk))
+        val call = Envelope(
+            call_state = dev.midfielder.proto.CallState(
+                call_id = 3, phase = dev.midfielder.proto.CallPhase.CALL_PHASE_RINGING,
+                number = "+919876543210", contact_name = "Mom", can_answer = true,
+            ),
+        )
+        assertEquals(v("frame.call_state"), frameHex(call))
+        val command = Envelope(
+            call_command = dev.midfielder.proto.CallCommand(
+                call_id = 3, action = dev.midfielder.proto.CallAction.CALL_ACTION_SMS_REPLY, text = "Driving, call you soon",
+            ),
+        )
+        assertEquals(v("frame.call_command"), frameHex(command))
+        val key = Envelope(presence_key = dev.midfielder.proto.PresenceKey(key = Hex.decode(v("presence.key")).toByteString()))
+        assertEquals(v("frame.presence_key"), frameHex(key))
+    }
+
+    @Test
+    fun `presence token`() {
+        val token = dev.midfielder.core.feature.PresenceToken.compute(Hex.decode(v("presence.key")), v("presence.slot").toLong())
+        assertEquals(v("presence.token"), Hex.encode(token))
     }
 
     @Test

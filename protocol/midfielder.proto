@@ -51,6 +51,9 @@ message Envelope {
     MediaCommand media_command = 71;               // capability "media": control the receiver's player
     AudioOffer audio_offer = 80;                   // capability "audio": a stream is ready, open a data connection
     AudioStop audio_stop = 81;                     // capability "audio": a stream ended (either side)
+    CallState call_state = 90;                     // capability "call": phone -> PC
+    CallCommand call_command = 91;                 // capability "call": PC -> phone
+    PresenceKey presence_key = 95;                 // capability "presence": PC -> phone, key for the BLE beacon
   }
 }
 
@@ -283,3 +286,48 @@ message AudioChunk {
   uint32 seq = 1;
   bytes pcm = 2;
 }
+
+// ---- Calls (capability "call") -------------------------------------------------------------------------------
+
+enum CallPhase {
+  CALL_PHASE_UNSPECIFIED = 0;
+  CALL_PHASE_RINGING = 1;        // incoming, not answered yet
+  CALL_PHASE_ACTIVE = 2;         // answered or dialled (off hook)
+  CALL_PHASE_ENDED = 3;
+}
+
+message CallState {
+  uint32 call_id = 1;            // grows with each call on the phone
+  CallPhase phase = 2;
+  string number = 3;             // may be empty (private number, or no call-log permission)
+  string contact_name = 4;       // empty when unknown or contacts aren't allowed
+  bytes photo = 5;               // contact photo, JPEG <= 16 KiB, optional
+  int64 started_at_ms = 6;       // when the phase began (ACTIVE: when the call was answered)
+  bool can_answer = 7;           // the phone allows answering and declining from the PC
+  bool can_sms = 8;              // the phone allows the quick SMS reply
+  string sms_text = 9;           // the quick reply the phone will send
+}
+
+enum CallAction {
+  CALL_ACTION_UNSPECIFIED = 0;
+  CALL_ACTION_ANSWER = 1;
+  CALL_ACTION_DECLINE = 2;
+  CALL_ACTION_END = 3;
+  CALL_ACTION_SILENCE = 4;       // stop the ringing, keep the call
+  CALL_ACTION_SMS_REPLY = 5;     // decline and text the caller (text, or the phone's own quick reply)
+}
+
+message CallCommand {
+  uint32 call_id = 1;
+  CallAction action = 2;
+  string text = 3;
+}
+
+// ---- Presence (capability "presence") ------------------------------------------------------------------------
+
+// The key the phone's BLE beacon uses: token = first 8 bytes of
+// HMAC-SHA256(key, "midfielder-presence-v1" || slot as big-endian int64), slot = unix seconds / 900.
+message PresenceKey {
+  bytes key = 1;                 // 32 random bytes, one per paired phone
+}
+

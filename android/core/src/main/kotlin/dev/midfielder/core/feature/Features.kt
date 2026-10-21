@@ -20,4 +20,10 @@ public object Features {
 
     /** Audio routes: AudioRequest, AudioOffer/AudioStop and audio streams. */
     public const val AUDIO: String = "audio"
+
+    /** Calls: CallState from the phone, CallCommand from the PC. */
+    public const val CALL: String = "call"
+
+    /** Auto-lock: the PC sends PresenceKey, the phone advertises the BLE beacon. */
+    public const val PRESENCE: String = "presence"
 }

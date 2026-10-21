@@ -21,4 +21,10 @@ public static class Features
 
     /// <summary>Audio routes: AudioRequest, AudioOffer/AudioStop and audio streams.</summary>
     public const string Audio = "audio";
+
+    /// <summary>Calls: CallState from the phone, CallCommand from the PC.</summary>
+    public const string Call = "call";
+
+    /// <summary>Auto-lock: the PC sends PresenceKey, the phone advertises the BLE beacon.</summary>
+    public const string Presence = "presence";
 }

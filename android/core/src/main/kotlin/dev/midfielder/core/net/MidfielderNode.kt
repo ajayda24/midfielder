@@ -442,7 +442,8 @@ public class MidfielderNode(
             env.notification_posted != null || env.notification_removed != null || env.notification_action != null ||
                 env.battery_status != null || env.ring_request != null ||
                 env.media_state != null || env.media_command != null ||
-                env.audio_request != null || env.audio_offer != null || env.audio_stop != null -> feature(session, env)
+                env.audio_request != null || env.audio_offer != null || env.audio_stop != null ||
+                env.call_state != null || env.call_command != null || env.presence_key != null -> feature(session, env)
             else -> Unit // Unknown or out-of-place message: ignore for forward compatibility.
         }
     }

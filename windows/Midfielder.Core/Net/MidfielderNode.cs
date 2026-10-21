@@ -404,6 +404,9 @@ public sealed class MidfielderNode : IAsyncDisposable
             case Envelope.BodyOneofCase.AudioRequest:
             case Envelope.BodyOneofCase.AudioOffer:
             case Envelope.BodyOneofCase.AudioStop:
+            case Envelope.BodyOneofCase.CallState:
+            case Envelope.BodyOneofCase.CallCommand:
+            case Envelope.BodyOneofCase.PresenceKey:
                 Feature(session, env);
                 break;
             default:

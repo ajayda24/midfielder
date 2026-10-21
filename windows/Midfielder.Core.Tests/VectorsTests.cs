@@ -105,6 +105,22 @@ public class VectorsTests
         Assert.Equal(V["frame.audio_offer"], await FrameHex(offer));
         var chunk = new Envelope { AudioChunk = new AudioChunk { Seq = 7, Pcm = ByteString.CopyFrom(0, 1, 0xff, 0x7f) } };
         Assert.Equal(V["frame.audio_chunk"], await FrameHex(chunk));
+        var call = new Envelope
+        {
+            CallState = new CallState { CallId = 3, Phase = CallPhase.Ringing, Number = "+919876543210", ContactName = "Mom", CanAnswer = true },
+        };
+        Assert.Equal(V["frame.call_state"], await FrameHex(call));
+        var command = new Envelope { CallCommand = new CallCommand { CallId = 3, Action = CallAction.SmsReply, Text = "Driving, call you soon" } };
+        Assert.Equal(V["frame.call_command"], await FrameHex(command));
+        var key = new Envelope { PresenceKey = new PresenceKey { Key = ByteString.CopyFrom(Hex.Decode(V["presence.key"])) } };
+        Assert.Equal(V["frame.presence_key"], await FrameHex(key));
+    }
+
+    [Fact]
+    public void PresenceTokenMatchesVector()
+    {
+        var token = Midfielder.Core.Feature.PresenceToken.Compute(Hex.Decode(V["presence.key"]), long.Parse(V["presence.slot"], System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(V["presence.token"], Hex.Encode(token));
     }
 
     [Fact]
