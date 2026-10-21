@@ -17,7 +17,9 @@
     <ServerGarbageCollector>false</ServerGarbageCollector>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <TieredPGO>false</TieredPGO>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- No InvariantGlobalization: WPF needs culture data to parse control templates and lay out text
+         ("Cannot find non-neutral culture related to 'en-us'"); without it the window never opens. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="QRCoder" Version="1.6.0" />
