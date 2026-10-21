@@ -16,9 +16,13 @@ internal sealed record PhoneState(
     BatteryStatus? Battery,
     MediaState? Media,
     IReadOnlyList<PhoneNotification> Notifications,
-    IReadOnlySet<string> Capabilities)
+    IReadOnlySet<string> Capabilities,
+    CallState? Call = null)
 {
     public static readonly PhoneState Empty = new(null, null, null, [], new HashSet<string>());
+
+    /// <summary>A call is in progress on the phone (answered or dialled).</summary>
+    public bool InCall => Call is { Phase: CallPhase.Active };
 
     public bool CanRing => Capabilities.Contains(Features.Ring);
     public bool HasMedia => Media is { Active: true };
@@ -61,13 +65,23 @@ internal sealed class PcFeatures : IDisposable
     private readonly PhoneBluetoothAudio _bluetooth;
     private PcAudioStream? _pcAudio;
     private IDisposable? _pcAudioHold;
+    private readonly Action _saveSettings;
+    private readonly Func<bool> _transferring;
+    private readonly EdgeDrop _edgeDrop;
+    private CallState? _call;
+    private PcPresence? _presence;
+    private string? _callAudioProblem;
 
-    public PcFeatures(MidfielderNode node, Func<FeatureSettings> settings, SynchronizationContext ui, Action<string?> showMain)
+    public PcFeatures(MidfielderNode node, Func<FeatureSettings> settings, SynchronizationContext ui, Action<string?> showMain,
+        Action saveSettings, Func<bool> transferring, Action<IReadOnlyList<string>> sendFiles)
     {
         _node = node;
         _settings = settings;
         _ui = ui;
         _showMain = showMain;
+        _saveSettings = saveSettings;
+        _transferring = transferring;
+        _edgeDrop = new EdgeDrop(() => Phone.Name, sendFiles);
         _toasts.Activated += (args, input) => _ui.Post(_ => OnToast(args, input), null);
         _bluetooth = new PhoneBluetoothAudio(ui);
         _bluetooth.Changed += Refresh;
@@ -79,6 +93,14 @@ internal sealed class PcFeatures : IDisposable
     public event Action? Changed;
 
     public PhoneState Phone { get; private set; } = PhoneState.Empty;
+
+    /// <summary>Auto-lock's live state (signal meter). Raised on the UI thread, about once a second while near.</summary>
+    public event Action? PresenceChanged;
+
+    public PresenceStatus Presence => _presence?.Status ?? PresenceStatus.Off;
+
+    /// <summary>Why "talk through this PC" isn't working, if it isn't.</summary>
+    public string? CallAudioProblem => _callAudioProblem;
 
     private FeatureSettings S => _settings();
 
@@ -102,6 +124,9 @@ internal sealed class PcFeatures : IDisposable
         if (!s.Ring) StopRinging();
         if (s.Audio && s.AudioPhoneToPc) _bluetooth.StartWatching(); else _bluetooth.StopWatching();
         if (!(s.Audio && s.AudioPcToPhone)) StopPcAudio("switched off");
+        if (!s.Calls) EndCall();
+        ApplyEdgeDrop();
+        ApplyPresence();
         _alerts.FullAt = s.BatteryFullAt;
         _node.SetFeatures(Enabled());
         Refresh();
@@ -115,12 +140,16 @@ internal sealed class PcFeatures : IDisposable
         if (s.Ring) yield return Features.Ring;
         if (s.Media) yield return Features.Media;
         if (s.Audio) yield return Features.Audio;
+        if (s.Calls) yield return Features.Call;
+        if (s.Presence) yield return Features.Presence;
     }
 
     public void OnPeerConnected(PeerSession session)
     {
         if (session.Has(Features.Battery) && _lastPcBattery is { } b) session.TrySend(new Envelope { BatteryStatus = b });
         if (session.Has(Features.Media)) _pcMedia?.Resend();
+        SendPresenceKey(session);
+        ApplyEdgeDrop();
         Refresh();
     }
 
@@ -131,7 +160,9 @@ internal sealed class PcFeatures : IDisposable
             ClearPhoneMedia();
             _phoneBattery = null;
             StopPcAudio("phone disconnected");
+            EndCall();
         }
+        ApplyEdgeDrop();
         Refresh();
     }
 
@@ -144,6 +175,11 @@ internal sealed class PcFeatures : IDisposable
                 if (from.Has(Features.Battery) && _lastPcBattery is { } b) from.TrySend(new Envelope { BatteryStatus = b });
                 if (from.Has(Features.Media)) _pcMedia?.Resend(); else ClearPhoneMedia();
                 if (!from.Has(Features.Battery)) _phoneBattery = null;
+                if (!from.Has(Features.Call)) EndCall();
+                SendPresenceKey(from);
+                break;
+            case Envelope.BodyOneofCase.CallState when s.Calls:
+                OnCall(from, env.CallState);
                 break;
             case Envelope.BodyOneofCase.NotificationPosted when s.Notify:
                 OnPhoneNotification(from, env.NotificationPosted);
@@ -188,6 +224,13 @@ internal sealed class PcFeatures : IDisposable
         if (S.Media) _node.SendFeature(Features.Media, new Envelope { MediaCommand = new MediaCommand { Action = action, SeekMs = seekMs } });
     }
 
+    public void CallCommand(CallAction action, string text = "")
+    {
+        if (_call is not { } call || !S.Calls) return;
+        _node.SendFeature(Features.Call, new Envelope { CallCommand = new CallCommand { CallId = call.CallId, Action = action, Text = text } });
+        if (action is CallAction.Answer or CallAction.Decline or CallAction.SmsReply or CallAction.Silence) Toasts.RemoveCall();
+    }
+
     public void Reply(string key, string text) => Act(new NotificationAction { Key = key, ReplyText = text });
 
     public void Dismiss(string key)
@@ -228,6 +271,11 @@ internal sealed class PcFeatures : IDisposable
             _showMain(null); // clicked the notification itself
             return;
         }
+        if (action == "call")
+        {
+            OnCallToast(args);
+            return;
+        }
         args.TryGetValue("key", out string? key);
         if (key is null) return;
         switch (action)
@@ -250,6 +298,131 @@ internal sealed class PcFeatures : IDisposable
         if (_notifications.Count == 0) return;
         foreach (var n in _notifications) Toasts.RemovePhoneNotification(n.Key);
         _notifications.Clear();
+    }
+
+    // ---- Calls --------------------------------------------------------------------------------------
+
+    private void OnCall(PeerSession from, CallState call)
+    {
+        var previous = _call;
+        _call = call.Phase == CallPhase.Ended ? null : call;
+        switch (call.Phase)
+        {
+            case CallPhase.Ringing:
+                try
+                {
+                    _toasts.ShowCall(call, from.Peer.Name, S.CallsActions);
+                }
+                catch (Exception e)
+                {
+                    AppLog.Error("Showing the incoming call failed", e);
+                }
+                break;
+            case CallPhase.Active:
+                Toasts.RemoveCall();
+                if (previous?.Phase == CallPhase.Ringing && S.CallsTalkOnPc) _ = ConnectCallAudioAsync();
+                break;
+            default:
+                Toasts.RemoveCall();
+                break;
+        }
+    }
+
+    private void OnCallToast(ToastArguments args)
+    {
+        if (_call is not { } call || !args.TryGetValue("id", out string? id) || id != call.CallId.ToString(System.Globalization.CultureInfo.InvariantCulture)) return;
+        args.TryGetValue("cmd", out string? cmd);
+        var action = cmd switch
+        {
+            "answer" => CallAction.Answer,
+            "decline" => CallAction.Decline,
+            "sms" => CallAction.SmsReply,
+            _ => CallAction.Silence,
+        };
+        CallCommand(action);
+    }
+
+    private void EndCall()
+    {
+        if (_call is null) return;
+        _call = null;
+        Toasts.RemoveCall();
+    }
+
+    /// <summary>Experimental: connect the phone as this PC's hands-free line so the call's audio comes here.</summary>
+    public async Task<string?> ConnectCallAudioAsync()
+    {
+        _callAudioProblem = await CallAudio.ConnectAsync(Phone.Name).ConfigureAwait(true);
+        if (_callAudioProblem is not null && S.CallsTalkOnPc)
+        {
+            S.CallsTalkOnPc = false; // turns itself off rather than staying on and broken
+            _saveSettings();
+        }
+        Refresh();
+        return _callAudioProblem;
+    }
+
+    // ---- Screen-edge drop and auto-lock --------------------------------------------------------------
+
+    private void ApplyEdgeDrop()
+    {
+        var s = S;
+        _edgeDrop.RightEdge = s.EdgeDropSide != "left";
+        if (s.EdgeDrop && _node.ConnectedPeers.Count > 0) _edgeDrop.Start(); else _edgeDrop.Stop();
+    }
+
+    private void ApplyPresence()
+    {
+        var s = S;
+        byte[]? key = s.Presence ? CurrentPresenceKey() : null;
+        if (key is null)
+        {
+            if (_presence is null) return;
+            _presence.Dispose();
+            _presence = null;
+            PresenceChanged?.Invoke();
+            return;
+        }
+        if (_presence is null)
+        {
+            _presence = new PcPresence(key, _ui, () => Phone.InCall || _transferring());
+            _presence.Changed += () => PresenceChanged?.Invoke();
+            _presence.Configure(key, s.PresenceNearRssi, TimeSpan.FromSeconds(s.PresenceDelaySeconds));
+            _presence.Start();
+        }
+        else
+        {
+            _presence.Configure(key, s.PresenceNearRssi, TimeSpan.FromSeconds(s.PresenceDelaySeconds));
+        }
+        PresenceChanged?.Invoke();
+    }
+
+    /// <summary>The beacon key of the paired phone (the first one), created on first use.</summary>
+    private byte[]? CurrentPresenceKey()
+    {
+        var peers = _node.ConnectedPeers;
+        string? fp = peers.Count > 0 ? peers[0].Fingerprint.Value : S.PresenceKeys.Keys.FirstOrDefault();
+        if (fp is null) return null;
+        if (S.PresenceKeys.TryGetValue(fp, out string? b64)) return Convert.FromBase64String(b64);
+        var key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        S.PresenceKeys[fp] = Convert.ToBase64String(key);
+        _saveSettings();
+        return key;
+    }
+
+    private void SendPresenceKey(PeerSession session)
+    {
+        if (!S.Presence || !session.Has(Features.Presence)) return;
+        string fp = session.Peer.Fingerprint.Value;
+        if (!S.PresenceKeys.TryGetValue(fp, out string? b64))
+        {
+            b64 = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+            S.PresenceKeys[fp] = b64;
+            _saveSettings();
+        }
+        var key = Convert.FromBase64String(b64);
+        session.TrySend(new Envelope { PresenceKey = new PresenceKey { Key = Google.Protobuf.ByteString.CopyFrom(key) } });
+        ApplyPresence();
     }
 
     // ---- Battery ------------------------------------------------------------------------------------
@@ -444,13 +617,17 @@ internal sealed class PcFeatures : IDisposable
             S.Battery ? _phoneBattery : null,
             S.Media && S.MediaPhoneToPc ? _phoneMediaState : null,
             S.Notify ? _notifications.ToList() : [],
-            session?.Capabilities ?? new HashSet<string>());
+            session?.Capabilities ?? new HashSet<string>(),
+            S.Calls ? _call : null);
         Changed?.Invoke();
     }
 
     public void Dispose()
     {
         StopPcAudio("closing");
+        EndCall();
+        _edgeDrop.Dispose();
+        _presence?.Dispose();
         _bluetooth.Dispose();
         StopBattery();
         _pcMedia?.Dispose();

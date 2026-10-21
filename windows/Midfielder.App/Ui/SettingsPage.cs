@@ -53,6 +53,7 @@ internal sealed class SettingsPage : PageBase
 
         Host.StatusChanged += OnStatus;
         Host.PhoneChanged += OnPhone;
+        Host.PresenceChanged += OnPresence;
         RenderDevices();
         RenderMenuState();
     }
@@ -151,7 +152,102 @@ internal sealed class SettingsPage : PageBase
             .OptionToggle("This PC's audio on the phone", "Streams over Wi-Fi with a short delay: great for music, not for video", f.AudioPcToPhone, Save(v => f.AudioPcToPhone = v))
             .OptionToggle("Mute this PC while it plays on the phone", "So the sound only comes from the phone", f.AudioMutePc, Save(v => f.AudioMutePc = v));
 
+        // Calls: the experimental "talk through this PC" switch turns itself back off when Windows refuses.
+        var talk = new Fluent.ToggleSwitch { IsChecked = f.CallsTalkOnPc };
+        System.Windows.Automation.AutomationProperties.SetName(talk, "Talk through this PC");
+        _callAudioNote = Fx.Caption("Experimental. Uses this PC's microphone and speakers for the call (Bluetooth hands-free)", wrap: true);
+        talk.Checked += async (_, _) =>
+        {
+            f.CallsTalkOnPc = true;
+            Host.ApplyFeatures();
+            _callAudioNote.Text = "Connecting…";
+            string? problem = await Host.ConnectCallAudioAsync().ConfigureAwait(true);
+            _callAudioNote.Text = problem ?? "Ready: answered calls use this PC's microphone and speakers";
+            if (problem is not null) talk.IsChecked = false;
+        };
+        talk.Unchecked += (_, _) =>
+        {
+            f.CallsTalkOnPc = false;
+            Host.ApplyFeatures();
+        };
+        Card(Fluent.SymbolRegular.Call24, "Calls", "See who's calling as a ringing Windows notification; answer or decline from here",
+                Features.Call, () => f.Calls, v => f.Calls = v)
+            .OptionToggle("Answer and decline buttons", "Also Text back and Silence, when the phone allows them", f.CallsActions, Save(v => f.CallsActions = v))
+            .Option("Talk through this PC", _callAudioNote, talk);
+
+        var side = new ComboBox { MinWidth = 100, ItemsSource = new[] { "Right", "Left" }, SelectedItem = f.EdgeDropSide == "left" ? "Left" : "Right" };
+        System.Windows.Automation.AutomationProperties.SetName(side, "Screen edge");
+        side.SelectionChanged += (_, _) =>
+        {
+            f.EdgeDropSide = side.SelectedItem as string == "Left" ? "left" : "right";
+            Host.ApplyFeatures();
+        };
+        Card(Fluent.SymbolRegular.ArrowExportLtr24, "Screen-edge drop", "Drag files to the edge of the screen and drop them on your phone",
+                "", () => f.EdgeDrop, v => f.EdgeDrop = v)
+            .Option("Screen edge", "Where the drop target slides in", side);
+
+        var near = new Slider { Minimum = -90, Maximum = -50, TickFrequency = 5, IsSnapToTickEnabled = true, Value = f.PresenceNearRssi, Width = 180 };
+        System.Windows.Automation.AutomationProperties.SetName(near, "How near counts as near");
+        var nearLabel = Fx.Caption(NearText(f.PresenceNearRssi));
+        var save = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        save.Tick += (_, _) =>
+        {
+            save.Stop();
+            Host.ApplyFeatures();
+        };
+        near.ValueChanged += (_, e) =>
+        {
+            f.PresenceNearRssi = (int)e.NewValue;
+            nearLabel.Text = NearText(f.PresenceNearRssi);
+            save.Stop();
+            save.Start();
+        };
+        var delay = new ComboBox { MinWidth = 100, ItemsSource = new[] { "10 s", "20 s", "30 s", "60 s" }, SelectedItem = $"{f.PresenceDelaySeconds} s" };
+        System.Windows.Automation.AutomationProperties.SetName(delay, "Lock after");
+        delay.SelectionChanged += (_, _) =>
+        {
+            if (delay.SelectedItem is string t && int.TryParse(t.Split(' ')[0], out int v))
+            {
+                f.PresenceDelaySeconds = v;
+                Host.ApplyFeatures();
+            }
+        };
+        _presenceMeter = new ProgressBar { Minimum = -100, Maximum = -40, Width = 180, Height = 6 };
+        _presenceText = Fx.Caption("", wrap: true);
+        _presenceCard = Card(Fluent.SymbolRegular.LockClosed24, "Lock when phone walks away", "Your phone sends a tiny Bluetooth signal; this PC locks when it fades",
+                Features.Presence, () => f.Presence, v => f.Presence = v)
+            .Option("Phone signal", "Walk away and watch it drop to see where \"away\" starts", Fx.Stack(6, _presenceMeter, _presenceText))
+            .Option("Near means", "Lower reaches further; higher locks sooner", Fx.Stack(4, near, nearLabel))
+            .Option("Lock after", "How long the phone must be away", delay);
+
         RenderFeatureStatus();
+    }
+
+    private TextBlock _callAudioNote = new();
+    private ProgressBar _presenceMeter = new();
+    private TextBlock _presenceText = new();
+    private FeatureCard? _presenceCard;
+
+    private static string NearText(int rssi) => rssi switch
+    {
+        >= -60 => $"{rssi} dBm · same desk",
+        >= -72 => $"{rssi} dBm · same room",
+        _ => $"{rssi} dBm · a few rooms",
+    };
+
+    /// <summary>The auto-lock meter: live signal and what it means.</summary>
+    private void RenderPresence()
+    {
+        var p = Host.Presence;
+        _presenceMeter.Value = p.Signal ?? _presenceMeter.Minimum;
+        _presenceText.Text = !p.On ? "Starts when the phone has the feature on too"
+            : p.Problem ?? p.State switch
+            {
+                Midfielder.Core.Feature.PresenceState.Near => $"{p.Signal:0} dBm · near",
+                Midfielder.Core.Feature.PresenceState.Leaving => p.Signal is { } sig ? $"{sig:0} dBm · away: locking in {p.Remaining.TotalSeconds:0} s" : $"Not heard · locking in {p.Remaining.TotalSeconds:0} s",
+                Midfielder.Core.Feature.PresenceState.Locked => "Locked. Unlock with the phone nearby to start again",
+                _ => p.Signal is { } s ? $"{s:0} dBm · waiting for the phone to come near" : "Listening for your phone…",
+            };
     }
 
     private ComboBox _btDevices = new();
@@ -176,9 +272,12 @@ internal sealed class SettingsPage : PageBase
         RenderBluetooth();
         var phone = Host.Phone;
         bool connected = phone.Name is not null;
+        RenderPresence();
         foreach (var (card, capability, on) in _cards)
         {
             if (!on()) card.SetStatus("Off", FeatureStatus.Off);
+            else if (capability.Length == 0) card.SetStatus(connected ? "On · drag files to the screen edge" : "On · works when your phone is connected",
+                connected ? FeatureStatus.Working : FeatureStatus.Waiting);
             else if (!connected) card.SetStatus("On · works when your phone is connected", FeatureStatus.Waiting);
             else if (!phone.Capabilities.Contains(capability)) card.SetStatus("Turn it on in Midfielder on your phone too", FeatureStatus.Waiting);
             else card.SetStatus("On · working with " + phone.Name, FeatureStatus.Working);
@@ -186,6 +285,8 @@ internal sealed class SettingsPage : PageBase
     }
 
     private void OnPhone() => Post(RenderFeatureStatus);
+
+    private void OnPresence() => Post(RenderPresence);
 
     private void OnStatus() => Post(RenderDevices);
 
@@ -268,5 +369,6 @@ internal sealed class SettingsPage : PageBase
     {
         Host.StatusChanged -= OnStatus;
         Host.PhoneChanged -= OnPhone;
+        Host.PresenceChanged -= OnPresence;
     }
 }

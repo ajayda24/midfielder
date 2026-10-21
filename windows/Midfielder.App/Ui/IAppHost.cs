@@ -67,6 +67,18 @@ internal interface IAppHost
     void ReplyToNotification(string key, string text);
     void DismissNotification(string key);
 
+    /// <summary>Answer, decline, end or silence the phone's current call (<see cref="PhoneState.Call"/>).</summary>
+    void CallCommand(CallAction action);
+
+    /// <summary>Experimental: connect the phone as this PC's hands-free line. Null when connected, else why not.</summary>
+    Task<string?> ConnectCallAudioAsync();
+
+    /// <summary>Auto-lock's live signal meter and state.</summary>
+    PresenceStatus Presence { get; }
+
+    /// <summary><see cref="Presence"/> changed. Raised on the UI thread.</summary>
+    event Action? PresenceChanged;
+
     /// <summary>The Windows 11 top-level "Send to phone" entry (sparse package).</summary>
     ModernMenuStatus ModernMenu { get; }
 

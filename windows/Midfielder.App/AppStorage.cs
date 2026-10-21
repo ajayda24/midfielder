@@ -141,6 +141,32 @@ internal sealed class FeatureSettings
 
     /// <summary>The Bluetooth device to use for the phone's sound; null picks the one named like the phone.</summary>
     public string? AudioBluetoothId { get; set; }
+
+    /// <summary>Calls: the phone's incoming calls as a ringing Windows notification (master switch).</summary>
+    public bool Calls { get; set; }
+
+    /// <summary>Answer, Decline and Message buttons on the call notification.</summary>
+    public bool CallsActions { get; set; } = true;
+
+    /// <summary>Experimental: take the phone's call audio through this PC (Bluetooth hands-free).</summary>
+    public bool CallsTalkOnPc { get; set; }
+
+    /// <summary>A drop target that slides in when files are dragged to the screen edge.</summary>
+    public bool EdgeDrop { get; set; }
+
+    /// <summary>Which edge: "right" or "left".</summary>
+    public string EdgeDropSide { get; set; } = "right";
+
+    /// <summary>Lock this PC when the phone walks away (its Bluetooth beacon fades).</summary>
+    public bool Presence { get; set; }
+
+    /// <summary>Smoothed signal at or above this (dBm) counts as near.</summary>
+    public int PresenceNearRssi { get; set; } = -75;
+
+    public int PresenceDelaySeconds { get; set; } = 20;
+
+    /// <summary>Beacon keys per paired phone (fingerprint → base64); the settings file is DPAPI-protected.</summary>
+    public Dictionary<string, string> PresenceKeys { get; set; } = [];
 }
 
 internal sealed record StoredDevice(string Fingerprint, string Name, int Kind, string? LastAddress);

@@ -57,9 +57,12 @@ internal sealed class FeatureCard : Border
     public bool IsOn { get; private set; }
 
     /// <summary>A row inside the card: title and description on the left, a control on the right.</summary>
-    public FeatureCard Option(string title, string description, UIElement trailing)
+    public FeatureCard Option(string title, string description, UIElement trailing) => Option(title, Fx.Caption(description, wrap: true), trailing);
+
+    /// <summary>A row whose description is live (e.g. a status line the caller keeps updating).</summary>
+    public FeatureCard Option(string title, UIElement description, UIElement trailing)
     {
-        var text = Fx.Stack(1, Fx.Text(title, 14), Fx.Caption(description, wrap: true));
+        var text = Fx.Stack(1, Fx.Text(title, 14), description);
         var row = Fx.Line(null, text, trailing, 16);
         row.Margin = new Thickness(0, 10, 0, 10);
         if (_options.Children.Count > 0)

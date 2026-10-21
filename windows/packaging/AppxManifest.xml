@@ -31,6 +31,9 @@
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
     <rescap:Capability Name="unvirtualizedResources" />
+    <!-- Experimental "talk through this PC": the phone as this PC's Bluetooth hands-free line. -->
+    <rescap:Capability Name="phoneLineTransportManagement" />
+    <DeviceCapability Name="bluetooth" />
   </Capabilities>
   <Applications>
     <Application Id="Midfielder" Executable="Midfielder.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">

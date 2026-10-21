@@ -38,6 +38,10 @@ internal sealed class HomePage : PageBase
     private readonly Image _mediaArt = new() { Width = 56, Height = 56, Stretch = Stretch.UniformToFill };
     private readonly Fluent.Button _mediaToggle;
     private readonly Border _notifyCard;
+    private readonly Border _callCard;
+    private readonly TextBlock _callWho = Fx.Text("", 15, FontWeights.SemiBold);
+    private readonly TextBlock _callTime = Fx.Caption("");
+    private readonly System.Windows.Threading.DispatcherTimer _callClock = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly StackPanel _notifyRows = new();
     private string? _artFor;
     private readonly System.Windows.Threading.DispatcherTimer _coalesce = new() { Interval = TimeSpan.FromMilliseconds(150) };
@@ -72,6 +76,17 @@ internal sealed class HomePage : PageBase
             Fx.Secondary("Send clipboard now", Fluent.SymbolRegular.ClipboardPaste24, Host.SendClipboardNow),
             Fx.Secondary("Received files", Fluent.SymbolRegular.FolderOpen24, () => Shell.OpenFolder(Host.Settings.ReceiveFolder)),
             _ring, _phoneAudio, _pcAudio), 16);
+
+        // On a call (only while Calls is on and the phone is in a call): its own row, not more hero buttons.
+        var callBadge = Fx.Badge(Fluent.SymbolRegular.Call24, 44, Fx.Green, Brushes.White, circle: true);
+        var callActions = Fx.Row(8,
+            Fx.Secondary("Silence", Fluent.SymbolRegular.SpeakerMute24, () => Host.CallCommand(Protocol.CallAction.Silence)),
+            Fx.Button("End", Fluent.SymbolRegular.CallEnd24, Fluent.ControlAppearance.Danger, () => Host.CallCommand(Protocol.CallAction.End)));
+        _callCard = Fx.Card(Fx.Line(callBadge, Fx.Stack(2, _callWho, _callTime), callActions, 16), 16);
+        _callCard.BorderBrush = Fx.HighlightStrong;
+        _callCard.Visibility = Visibility.Collapsed;
+        Add(_callCard, 16);
+        _callClock.Tick += (_, _) => RenderCallTime();
 
         // Drop zone
         Add(DropZone(), 6);
@@ -242,6 +257,8 @@ internal sealed class HomePage : PageBase
             ? Visibility.Visible : Visibility.Collapsed;
         _pcAudio.Content = audio.PcAudioOnPhone ? "Stop playing on phone" : "Play on phone";
         _pcAudio.Appearance = audio.PcAudioOnPhone ? Fluent.ControlAppearance.Primary : Fluent.ControlAppearance.Secondary;
+
+        RenderCall(phone);
 
         if (phone.Media is { Active: true } m)
         {
@@ -445,8 +462,39 @@ internal sealed class HomePage : PageBase
         return tile;
     }
 
+    private void RenderCall(Continuity.PhoneState phone)
+    {
+        if (phone.Call is { } call && Host.Settings.Features.Calls)
+        {
+            string who = call.ContactName.Length > 0 ? call.ContactName : call.Number.Length > 0 ? call.Number : "Unknown caller";
+            _callWho.Text = call.Phase == Protocol.CallPhase.Ringing ? $"{who} is calling" : who;
+            _callCard.Visibility = Visibility.Visible;
+            RenderCallTime();
+            if (call.Phase == Protocol.CallPhase.Active) _callClock.Start(); else _callClock.Stop();
+        }
+        else
+        {
+            _callClock.Stop();
+            _callCard.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void RenderCallTime()
+    {
+        if (Host.Phone.Call is not { } call) return;
+        if (call.Phase != Protocol.CallPhase.Active)
+        {
+            _callTime.Text = "Ringing on your phone";
+            return;
+        }
+        var d = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeMilliseconds(call.StartedAtMs);
+        if (d < TimeSpan.Zero) d = TimeSpan.Zero;
+        _callTime.Text = $"On a call · {(int)d.TotalMinutes}:{d.Seconds:00}";
+    }
+
     protected override void OnDispose()
     {
+        _callClock.Stop();
         Host.StatusChanged -= OnStatus;
         Host.PhoneChanged -= OnPhone;
         Host.Transfers.Changed -= OnTransfers;

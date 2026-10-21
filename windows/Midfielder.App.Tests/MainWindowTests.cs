@@ -258,7 +258,7 @@ public sealed partial class MainWindowTests : IDisposable
         {
             _empty = empty;
             Settings = new Settings { ReceiveFolder = dir };
-            if (!empty) Settings.Features = new FeatureSettings { Notify = true, Battery = true, Ring = true, Media = true, Audio = true };
+            if (!empty) Settings.Features = new FeatureSettings { Notify = true, Battery = true, Ring = true, Media = true, Audio = true, Calls = true, EdgeDrop = true, Presence = true };
             History = new HistoryStore(null);
             if (empty) return;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -335,7 +335,12 @@ public sealed partial class MainWindowTests : IDisposable
                 new PhoneNotification("n1", "WhatsApp", "Mom", "Dinner at 8? Bring the charger you borrowed 🙂", DateTime.Now.AddMinutes(-3), true),
                 new PhoneNotification("n2", "Gmail", "Your boarding pass", "Flight 6E 2134 · Gate 14 · Boarding 18:40", DateTime.Now.AddMinutes(-41), false),
             ],
-            new HashSet<string> { Features.Notify, Features.Battery, Features.Ring, Features.Media, Features.Audio });
+            new HashSet<string> { Features.Notify, Features.Battery, Features.Ring, Features.Media, Features.Audio, Features.Call, Features.Presence },
+            new CallState
+            {
+                CallId = 1, Phase = CallPhase.Active, Number = "+91 98765 43210", ContactName = "Mom", CanAnswer = true,
+                StartedAtMs = DateTimeOffset.UtcNow.AddSeconds(-83).ToUnixTimeMilliseconds(),
+            });
 
 #pragma warning disable CS0067 // never raised in the fake
         public event Action? PhoneChanged;
@@ -350,6 +355,13 @@ public sealed partial class MainWindowTests : IDisposable
         public void StopPcAudioOnPhone() { }
         public void ReplyToNotification(string key, string text) { }
         public void DismissNotification(string key) { }
+        public void CallCommand(CallAction action) { }
+        public Task<string?> ConnectCallAudioAsync() => Task.FromResult<string?>(null);
+        public PresenceStatus Presence => _empty ? PresenceStatus.Off : new PresenceStatus(true, -61, PresenceState.Near, TimeSpan.FromSeconds(20), null);
+
+#pragma warning disable CS0067 // never raised in the fake
+        public event Action? PresenceChanged;
+#pragma warning restore CS0067
 
         public void RaiseStatus() => StatusChanged?.Invoke();
     }

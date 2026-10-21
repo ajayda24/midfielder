@@ -92,6 +92,9 @@ device stops it for the pair. Unknown capabilities and messages are ignored.
 |  | `MediaCommand` (controls the receiver's current player) | both ways |
 | `audio` | `AudioRequest(route, start)` (asks the other side to start or stop a route) | both ways |
 |  | `AudioOffer(stream_id, sample_rate, channels)`, `AudioStop(stream_id, reason)` | listener → dialer, `AudioStop` both ways |
+| `call` | `CallState` (phase RINGING → ACTIVE → ENDED per `call_id`; contact name and photo only if the phone allows) | phone → PC |
+|  | `CallCommand` (ANSWER, DECLINE, END, SILENCE, SMS_REPLY; ignored unless `call_id` is the current call) | PC → phone |
+| `presence` | `PresenceKey` (32 random bytes per paired phone, sent on connect) | PC → phone |
 
 Limits: notification title 200 and text 1,000 characters, icon ≤ 8 KiB PNG, at most 3 buttons; album art ≤ 64 KiB
 JPEG (300 px). Senders coalesce: notifications are sent only when title or text change, media state is debounced
@@ -112,4 +115,13 @@ Two routes, each behind its own switch:
 
 Players keep the delay bounded: start after ~100 ms, never queue more than ~200 ms, and drop late audio rather
 than fall behind.
+
+### Presence beacon (auto-lock)
+
+While `presence` is on and it has a key, the phone advertises a non-connectable Bluetooth LE packet in low-power
+mode with manufacturer-specific data: company id `0xFFFF`, version byte `1`, then an 8-byte token =
+HMAC-SHA256(key, `"midfielder-presence-v1"` ‖ slot as big-endian int64)[0..8], slot = unix seconds / 900. The PC
+accepts the current slot and its neighbours, smooths the signal strength and locks after the phone has been weak or
+unheard for the chosen delay — only once it has seen the phone near since the last unlock, and never during a call
+or a transfer. The token reveals nothing to anyone without the key and changes every 15 minutes.
 

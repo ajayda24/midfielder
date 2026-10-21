@@ -68,7 +68,8 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         _identity = _storage.LoadOrCreateIdentity();
         _trust = new PersistentTrustStore(_storage);
         _node = new MidfielderNode(_identity, Environment.MachineName, DeviceKind.Windows, _trust, new Events(this));
-        _features = new PcFeatures(_node, () => _settings.Features, _ui, page => ShowMain(page));
+        _features = new PcFeatures(_node, () => _settings.Features, _ui, page => ShowMain(page),
+            () => _storage.SaveSettings(_settings), IsTransferring, paths => SendFiles(paths));
         _features.Changed += () => PhoneChanged?.Invoke();
         _clipSync = new ClipSync(_identity.DeviceId, BroadcastAsync, ApplyRemoteValueTaskAsync) { Enabled = _settings.SyncClipboard };
         _history = new HistoryStore(Path.Combine(_storage.Root, "history.json"));
@@ -622,6 +623,11 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
         lock (_transferHolds) _transferHolds.Push(hold);
     }
 
+    private bool IsTransferring()
+    {
+        lock (_transferHolds) return _transferHolds.Count > 0;
+    }
+
     private void EndTransfer()
     {
         IDisposable? hold;
@@ -764,6 +770,18 @@ internal sealed class TrayContext : ApplicationContext, IAppHost
     void IAppHost.ReplyToNotification(string key, string text) => _features.Reply(key, text);
 
     void IAppHost.DismissNotification(string key) => _features.Dismiss(key);
+
+    void IAppHost.CallCommand(CallAction action) => _features.CallCommand(action);
+
+    Task<string?> IAppHost.ConnectCallAudioAsync() => _features.ConnectCallAudioAsync();
+
+    PresenceStatus IAppHost.Presence => _features.Presence;
+
+    event Action? IAppHost.PresenceChanged
+    {
+        add => _features.PresenceChanged += value;
+        remove => _features.PresenceChanged -= value;
+    }
 
     ModernMenuStatus IAppHost.ModernMenu => ModernMenu.Status;
 

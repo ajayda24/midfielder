@@ -82,6 +82,64 @@ internal sealed class Toasts : IDisposable
         }
     }
 
+    private const string CallTag = "call";
+
+    /// <summary>
+    /// An incoming call: rings and stays on screen (the IncomingCall scenario) until answered, declined or ended on
+    /// the phone. Buttons only for what the phone allows.
+    /// </summary>
+    public void ShowCall(CallState call, string phoneName, bool actions)
+    {
+        EnsureSubscribed();
+        string who = call.ContactName.Length > 0 ? call.ContactName : call.Number.Length > 0 ? call.Number : "Unknown caller";
+        var b = new ToastContentBuilder()
+            .SetToastScenario(ToastScenario.IncomingCall)
+            .AddText(who, hintMaxLines: 1)
+            .AddText(call.ContactName.Length > 0 && call.Number.Length > 0 ? $"Calling · {call.Number}" : "Incoming call")
+            .AddAttributionText(phoneName);
+        if (PhotoFile(call) is { } photo) b.AddAppLogoOverride(new Uri(photo), ToastGenericAppLogoCrop.Circle);
+        string id = call.CallId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (actions && call.CanAnswer)
+        {
+            b.AddButton(new ToastButton().SetContent("Answer").AddArgument("action", "call").AddArgument("cmd", "answer").AddArgument("id", id));
+            b.AddButton(new ToastButton().SetContent("Decline").AddArgument("action", "call").AddArgument("cmd", "decline").AddArgument("id", id));
+        }
+        if (actions && call.CanSms) b.AddButton(new ToastButton().SetContent("Text back").AddArgument("action", "call").AddArgument("cmd", "sms").AddArgument("id", id));
+        b.AddButton(new ToastButton().SetContent("Silence").AddArgument("action", "call").AddArgument("cmd", "silence").AddArgument("id", id));
+        b.Show(t =>
+        {
+            t.Tag = CallTag;
+            t.Group = PhoneGroup;
+        });
+    }
+
+    public static void RemoveCall()
+    {
+        try
+        {
+            ToastNotificationManagerCompat.History.Remove(CallTag, PhoneGroup);
+        }
+        catch (Exception e) when (e is System.Runtime.InteropServices.COMException or InvalidOperationException)
+        {
+        }
+    }
+
+    private string? PhotoFile(CallState call)
+    {
+        if (call.Photo.IsEmpty) return null;
+        try
+        {
+            Directory.CreateDirectory(_iconDir);
+            string path = Path.Combine(_iconDir, "caller.jpg");
+            File.WriteAllBytes(path, call.Photo.ToByteArray());
+            return path;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>A plain notification (battery alerts and the like).</summary>
     public void Show(string title, string text, string? tag = null)
     {
