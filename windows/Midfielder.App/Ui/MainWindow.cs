@@ -106,8 +106,27 @@ internal sealed class MainWindow : Fluent.FluentWindow
         if (_page is null) CurrentPage = "";
         ShowPage(page ?? (CurrentPage.Length > 0 ? CurrentPage : _lastPage));
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        // A window shown again appears before WPF has drawn into it (a blank white frame for a moment): keep it
+        // cloaked until two frames have rendered, then reveal it complete.
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        NativeMethods.Cloak(hwnd, true);
         Show();
         Activate();
+        int frames = 0;
+        var fallback = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        void Reveal()
+        {
+            System.Windows.Media.CompositionTarget.Rendering -= OnFrame;
+            fallback.Stop();
+            NativeMethods.Cloak(hwnd, false);
+        }
+        void OnFrame(object? sender, EventArgs e)
+        {
+            if (++frames >= 3) Reveal(); // the event runs before each frame: after the 3rd, two are on screen
+        }
+        System.Windows.Media.CompositionTarget.Rendering += OnFrame;
+        fallback.Tick += (_, _) => Reveal();
+        fallback.Start();
     }
 
     private string _lastPage = HomeName;

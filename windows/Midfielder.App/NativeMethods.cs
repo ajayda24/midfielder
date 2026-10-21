@@ -264,4 +264,16 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool AllowSetForegroundWindow(uint processId);
+
+    private const int DWMWA_CLOAK = 13;
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    /// <summary>Hides a window from the screen (and the taskbar) without hiding it from Windows.</summary>
+    public static void Cloak(IntPtr hwnd, bool cloaked)
+    {
+        int value = cloaked ? 1 : 0;
+        _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, ref value, sizeof(int));
+    }
 }

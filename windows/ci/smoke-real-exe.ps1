@@ -24,6 +24,8 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+    public static bool Cloaked(IntPtr h) { int v; return DwmGetWindowAttribute(h, 14, out v, 4) == 0 && v != 0; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     public static List<IntPtr> Windows(uint pid) {
         var list = new List<IntPtr>();
@@ -115,6 +117,9 @@ try {
     # Reopen like a user does: close the window (it hides; the app stays in the tray), let it go idle (efficiency
     # mode), then start Midfielder again: the running one must show its window at once, painted.
     if ($null -ne $main) {
+        # The pairing window (mostly white, on top) would cover the main window in the screenshots: close it.
+        [Win]::Windows([uint32]$proc.Id) | Where-Object { [Win]::Title($_) -eq 'Pair your phone' } |
+            ForEach-Object { [Win]::PostMessage($_, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null }
         [Win]::PostMessage($main, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
         Start-Sleep -Seconds 2
         $proc.Refresh()
@@ -127,18 +132,19 @@ try {
             $shown = $null
             while ($clock.ElapsedMilliseconds -lt 5000 -and $null -eq $shown) {
                 Start-Sleep -Milliseconds 25
-                $shown = [Win]::Windows([uint32]$proc.Id) | Where-Object { [Win]::Title($_) -eq 'Midfielder' } | Select-Object -First 1
+                # On screen = visible and not cloaked (the app reveals the window once it has drawn it).
+                $shown = [Win]::Windows([uint32]$proc.Id) | Where-Object { [Win]::Title($_) -eq 'Midfielder' -and -not [Win]::Cloaked($_) } | Select-Object -First 1
             }
             $ms = $clock.ElapsedMilliseconds
             if ($null -eq $shown) { $problems += 'starting Midfielder again did not show the window' }
             else {
-                # Early frame first (would catch a white flash), then the settled one.
+                # The first frame on screen (would catch a white flash), then the settled one.
                 $early = Snap $shown 'windows-real-exe-reopen-early.png' 'reopen (early)'
                 Start-Sleep -Milliseconds 600
                 $late = Snap $shown 'windows-real-exe-reopen.png' 'reopen'
                 Write-Host "Reopen: window visible after $ms ms (includes starting the second exe)"
                 if ($ms -gt 2500) { $problems += "reopening took $ms ms" }
-                if ($early -gt 97 -or $late -gt 97) { $problems += "the reopened window was blank ($early% / $late% white)" }
+                if ($early -gt 90 -or $late -gt 90) { $problems += "the reopened window was blank ($early% / $late% white)" }
             }
         }
     }
