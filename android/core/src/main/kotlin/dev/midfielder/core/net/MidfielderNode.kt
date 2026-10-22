@@ -365,7 +365,7 @@ public class MidfielderNode(
 
     private suspend fun openTls(address: HostPort, expected: Fingerprint): SSLSocket {
         val ctx = Tls.context(identity) { it == expected }
-        val raw = Socket()
+        val raw = runCatching { config.socketFactory().createSocket() }.getOrElse { Socket() }
         try {
             raw.tcpNoDelay = true
             raw.keepAlive = true
@@ -702,6 +702,12 @@ public class MidfielderNode(
             events.onTransferFinished(t.id, t.from, TransferResult.Failed(failure))
         }
     }
+
+    /**
+     * Fails incoming transfers whose peer hasn't come back within the resume window. Called lazily (new offers)
+     * and by the app once a resume window after a disconnect, so a paused transfer doesn't linger forever.
+     */
+    public fun expireStaleTransfers(): Unit = sweepStaleIncoming()
 
     /** Lazy cleanup instead of a timer: nothing wakes the CPU just to tidy up. */
     private fun sweepStaleIncoming() {

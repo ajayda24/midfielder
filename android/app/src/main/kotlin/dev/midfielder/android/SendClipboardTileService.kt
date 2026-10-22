@@ -9,13 +9,29 @@ import android.service.quicksettings.TileService
 /** Quick Settings tile: one tap sends the current clipboard to the PC (works with no setup at all). */
 class SendClipboardTileService : TileService() {
     override fun onStartListening() {
+        val engine = SyncEngine.current
+        val status = engine?.status?.value
         qsTile?.apply {
-            state = if (SyncEngine.current?.status?.value?.connected?.isNotEmpty() == true) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+            // Always tappable (sending works the moment the PC connects); the subtitle says where it goes.
+            state = Tile.STATE_ACTIVE
+            if (Build.VERSION.SDK_INT >= 29) {
+                subtitle = when {
+                    status == null -> null
+                    status.connected.isNotEmpty() -> status.connected.first()
+                    status.paired.isEmpty() -> "Not paired"
+                    else -> "Not connected"
+                }
+            }
             updateTile()
         }
     }
 
     override fun onClick() {
+        // On the lock screen, unlock first: the clipboard can't be read while locked.
+        if (isLocked) unlockAndRun { sendClipboard() } else sendClipboard()
+    }
+
+    private fun sendClipboard() {
         val intent = Intent(this, ClipboardReaderActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
             .putExtra(ClipboardReaderActivity.EXTRA_FORCE, true)

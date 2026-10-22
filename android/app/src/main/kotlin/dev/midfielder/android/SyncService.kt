@@ -49,6 +49,13 @@ class SyncService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_SEND_TEXT) {
+            val text = intent.getStringExtra(EXTRA_TEXT)
+            if (!text.isNullOrEmpty()) {
+                val result = engine?.onLocalClipboard(dev.midfielder.core.clip.ClipContent.Text(text), force = true)
+                if (result != null) android.widget.Toast.makeText(this, result, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
         if (intent?.action == ACTION_SEND_URIS) {
             // URIs arrive with a read grant attached to this intent, which lasts while the service runs.
             val uris = intent.clipData?.let { clip -> (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri } }.orEmpty()
@@ -69,6 +76,13 @@ class SyncService : Service() {
     companion object {
         private const val ACTION_SEND_URIS = "dev.midfielder.SEND_URIS"
         private const val EXTRA_TARGET = "target"
+        private const val ACTION_SEND_TEXT = "dev.midfielder.SEND_TEXT"
+        private const val EXTRA_TEXT = "text"
+
+        /** Shared text while the engine isn't running yet: the service sends it once it has started. */
+        fun sendText(context: Context, text: String) {
+            context.startForegroundService(Intent(context, SyncService::class.java).setAction(ACTION_SEND_TEXT).putExtra(EXTRA_TEXT, text))
+        }
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, SyncService::class.java))

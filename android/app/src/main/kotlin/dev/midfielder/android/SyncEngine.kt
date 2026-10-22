@@ -37,13 +37,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.Closeable
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Everything the phone does, owned by [SyncService] and closed with it. Holds only the application context,
@@ -97,6 +97,7 @@ class SyncEngine(context: Context) : Closeable {
 
         override fun onPeerDisconnected(device: PairedDevice, cause: Throwable?) {
             features.onPeerDisconnected()
+            pauseTransfersWith(device)
             refreshStatus("Disconnected from ${device.name}")
             connections.onDisconnected(device)
         }
@@ -120,8 +121,15 @@ class SyncEngine(context: Context) : Closeable {
                 clipTransfers += offer.transfer_id
                 return listOf(DirectoryFileSink(File(app.cacheDir, "clip-in").toPath(), offer.transfer_id, "clipboard.png"))
             }
-            if (!storage.acceptFiles) return null
-            locks.acquire()
+            if (!storage.acceptFiles) {
+                notifications.problem(
+                    "File from ${from.name} refused",
+                    "${titleOf(offer.files.map { it.name })} wasn't saved: \"Accept files from your PC\" is off in Settings.",
+                )
+                return null
+            }
+            locks.hold(offer.transfer_id)
+            transferPeers[offer.transfer_id] = from.deviceId
             incomingOffers[offer.transfer_id] = offer
             transfers.start(offer.transfer_id, Direction.RECEIVED, titleOf(offer.files.map { it.name }), from.name, offer.files.sumOf { it.size })
             return offer.files.mapIndexed { i, f -> MediaStoreFileSink(app, "${offer.transfer_id}-$i", f.name, f.mime) }
@@ -131,6 +139,7 @@ class SyncEngine(context: Context) : Closeable {
             // Clipboard-image transfers aren't tracked: they're shown as a clipboard change, not a file.
             if (!transfers.contains(transferId)) return
             transfers.progress(transferId, transferred, total)
+            locks.hold(transferId) // bytes are moving again after a pause; also renews the CPU lock's timeout
             val now = SystemClock.elapsedRealtime()
             if (transferred < total && now - (lastProgressUi[transferId] ?: 0L) < PROGRESS_UI_MS) return
             lastProgressUi[transferId] = now
@@ -145,7 +154,8 @@ class SyncEngine(context: Context) : Closeable {
                 if (result is TransferResult.Completed) applyClipboardFile(result.locations.single())
                 return
             }
-            locks.release()
+            locks.drop(transferId)
+            transferPeers.remove(transferId)
             transfers.finish(transferId)
             val offer = incomingOffers.remove(transferId)
             when (result) {
@@ -172,7 +182,7 @@ class SyncEngine(context: Context) : Closeable {
     private val node: MidfielderNode = MidfielderNode(
         identity, deviceName(), DeviceKind.DEVICE_KIND_ANDROID, storage.trustStore, events,
         // elapsedRealtime keeps counting in deep sleep, so heartbeat math stays right after the phone naps.
-        NodeConfig(clock = SystemClock::elapsedRealtime),
+        NodeConfig(clock = SystemClock::elapsedRealtime, socketFactory = { connections.socketFactory() }),
     )
 
     /** Notifications, battery, find my phone and music; each switched on or off in Settings. */
@@ -342,10 +352,16 @@ class SyncEngine(context: Context) : Closeable {
 
     /** Sends files to [targetShortcutId]'s PC (from Direct Share) or the first connected PC. */
     fun sendUris(uris: List<Uri>, targetShortcutId: String? = null) {
-        val sources = uris.mapNotNull { uri ->
-            runCatching { UriFileSource(app, uri) }.onFailure { EventLog.error("Can't read $uri", it) }.getOrNull()
+        // Reading names and sizes is a provider query per file: off the main thread (shares of 50 photos).
+        scope.launch(Dispatchers.IO) {
+            val sources = uris.mapNotNull { uri ->
+                runCatching { UriFileSource(app, uri) }.onFailure { EventLog.error("Can't read $uri", it) }.getOrNull()
+            }
+            when {
+                sources.isEmpty() -> if (uris.isNotEmpty()) notifications.problem("Not sent", "Midfielder couldn't read the shared file.")
+                else -> sendToPcs(sources, TransferPurpose.TRANSFER_PURPOSE_FILE, targetShortcutId)
+            }
         }
-        if (sources.isNotEmpty()) sendToPcs(sources, TransferPurpose.TRANSFER_PURPOSE_FILE, targetShortcutId)
     }
 
     fun cancelTransfer(id: String) = node.cancelTransfer(id)
@@ -354,12 +370,13 @@ class SyncEngine(context: Context) : Closeable {
         val peers = node.connectedPeers.value
         val target = peers.firstOrNull { ShareShortcuts.idFor(it) == targetShortcutId } ?: peers.firstOrNull()
         if (target == null) {
-            // Typical right after a share starts the service: hold the files briefly and send once connected.
-            if (purpose == TransferPurpose.TRANSFER_PURPOSE_FILE) {
-                synchronized(waitingSends) { waitingSends += WaitingSend(sources, targetShortcutId, SystemClock.elapsedRealtime()) }
-                EventLog.add("PC not connected: ${sources.size} file(s) will be sent when it connects")
+            val paired = storage.trustStore.all().filter { it.kind != DeviceKind.DEVICE_KIND_ANDROID }
+            if (paired.isEmpty()) {
+                if (purpose == TransferPurpose.TRANSFER_PURPOSE_FILE) notifications.problem("Not sent", "Pair with your PC first: open Midfielder and scan the code on your PC.")
+                return
             }
-            refreshStatus("PC not connected")
+            // Typical right after a share starts the service: hold the files briefly and send once connected.
+            if (purpose == TransferPurpose.TRANSFER_PURPOSE_FILE) queueUntilConnected(sources, targetShortcutId, paired.first().name)
             connections.kick("send")
             return
         }
@@ -367,7 +384,8 @@ class SyncEngine(context: Context) : Closeable {
         val id = node.newTransferId()
         if (isFile) transfers.start(id, Direction.SENT, titleOf(sources.map { it.name }), target.name, sources.sumOf { it.size })
         scope.launch {
-            locks.acquire()
+            locks.hold(id)
+            transferPeers[id] = target.deviceId
             try {
                 val result = node.sendFiles(target.fingerprint, sources, purpose, id)
                 if (isFile) onSendFinished(id, target, sources, result)
@@ -375,21 +393,71 @@ class SyncEngine(context: Context) : Closeable {
                 if (isFile) onSendFinished(id, target, sources, TransferResult.Failed(e.message ?: "send failed"))
                 refreshStatus("Send failed: ${e.message}")
             } finally {
-                locks.release()
+                locks.drop(id)
+                transferPeers.remove(id)
             }
         }
     }
 
-    private class WaitingSend(val sources: List<FileSource>, val target: String?, val atMs: Long)
+    /** Which PC (device id) each running transfer is with, to pause the right ones on a disconnect. */
+    private val transferPeers = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * The connection to [device] dropped mid-transfer: the core resumes it if the PC returns within the resume
+     * window. Meanwhile nothing moves, so the Wi-Fi and CPU locks are let go, and the notification says it waits.
+     */
+    private fun pauseTransfersWith(device: PairedDevice) {
+        val paused = transferPeers.filterValues { it == device.deviceId }.keys
+        if (paused.isEmpty()) return
+        for (id in paused) {
+            locks.drop(id)
+            val t = transfers.active.value.firstOrNull { it.id == id } ?: continue
+            notifications.progress(id, "Waiting for ${device.name} to resume ${t.title}", t.done, t.total)
+        }
+        EventLog.add("${paused.size} transfer(s) paused: ${device.name} disconnected")
+        scope.launch {
+            delay(RESUME_WINDOW_MS + 5_000)
+            node.expireStaleTransfers() // fails incoming ones that never resumed (outgoing ones fail by themselves)
+        }
+    }
+
+    private class WaitingSend(val id: String, val sources: List<FileSource>, val target: String?, val pcName: String)
 
     private val waitingSends = ArrayList<WaitingSend>()
 
+    /**
+     * Holds files for up to [WAITING_SEND_MS] while the PC connects, with a notification saying so. If it doesn't
+     * connect in time they're recorded as not sent (so Files shows them, and the user knows to try again).
+     */
+    private fun queueUntilConnected(sources: List<FileSource>, target: String?, pcName: String) {
+        val w = WaitingSend(node.newTransferId(), sources, target, pcName)
+        synchronized(waitingSends) { waitingSends += w }
+        val what = titleOf(sources.map { it.name })
+        notifications.finished(w.id, "Waiting for $pcName", "$what will be sent when it connects. Is Midfielder open on the PC?")
+        EventLog.add("PC not connected: ${sources.size} file(s) will be sent when it connects")
+        scope.launch {
+            delay(WAITING_SEND_MS)
+            val expired = synchronized(waitingSends) { waitingSends.remove(w) }
+            if (!expired) return@launch
+            val now = System.currentTimeMillis()
+            history.add(
+                sources.mapIndexed { i, src ->
+                    TransferRecord(
+                        "${w.id}-$i", Direction.SENT, src.name, src.mime, src.size, pcName, now, RecordStatus.FAILED,
+                        (src as? UriFileSource)?.uri?.toString().orEmpty(),
+                    )
+                },
+            )
+            notifications.finished(w.id, "Not sent to $pcName", "It didn't connect in time. Share $what again once it's on.")
+            EventLog.add("Gave up sending ${sources.size} file(s): $pcName didn't connect")
+        }
+    }
+
     private fun flushWaitingSends() {
-        val now = SystemClock.elapsedRealtime()
         val ready = synchronized(waitingSends) { waitingSends.toList().also { waitingSends.clear() } }
         for (w in ready) {
-            if (now - w.atMs <= WAITING_SEND_MS) sendToPcs(w.sources, TransferPurpose.TRANSFER_PURPOSE_FILE, w.target)
-            else EventLog.add("Gave up sending ${w.sources.size} file(s): PC didn't connect")
+            notifications.cancel(w.id)
+            sendToPcs(w.sources, TransferPurpose.TRANSFER_PURPOSE_FILE, w.target)
         }
     }
 
@@ -477,6 +545,7 @@ class SyncEngine(context: Context) : Closeable {
         private const val MAX_CLIP_TRANSFER_BYTES = 64L * 1024 * 1024
         private const val PROGRESS_UI_MS = 500L
         private const val WAITING_SEND_MS = 2 * 60_000L
+        private const val RESUME_WINDOW_MS = 10 * 60_000L // NodeConfig.resumeWindowMs
 
         /** The live engine while [SyncService] runs. Activities only reach it through here. */
         @Volatile
@@ -490,7 +559,12 @@ class SyncEngine(context: Context) : Closeable {
  */
 class TransferLocks(context: Context) {
     private val app = context.applicationContext
-    private val count = AtomicInteger()
+    private val holders: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val safety = Runnable {
+        EventLog.add("Transfer locks held too long; released")
+        releaseAll()
+    }
     private val wake = app.getSystemService(PowerManager::class.java)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "midfielder:transfer").apply { setReferenceCounted(false) }
 
@@ -498,21 +572,31 @@ class TransferLocks(context: Context) {
     private val wifi = app.getSystemService(WifiManager::class.java)
         .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "midfielder:transfer").apply { setReferenceCounted(false) }
 
-    fun acquire() {
-        if (count.incrementAndGet() == 1) {
+    /** Transfer [id] is moving bytes. Idempotent; each call renews the timeouts, so long transfers stay covered. */
+    @Synchronized
+    fun hold(id: String) {
+        holders += id
+        runCatching {
             wake.acquire(MAX_HOLD_MS)
-            wifi.acquire()
+            if (!wifi.isHeld) wifi.acquire()
         }
+        // The Wi-Fi lock has no timeout of its own: a safety net in case a transfer never reports back.
+        main.removeCallbacks(safety)
+        main.postDelayed(safety, MAX_HOLD_MS)
     }
 
-    fun release() {
-        if (count.decrementAndGet() <= 0) releaseAll()
+    /** Transfer [id] finished or paused. */
+    @Synchronized
+    fun drop(id: String) {
+        if (holders.remove(id) && holders.isEmpty()) releaseAll()
     }
 
+    @Synchronized
     fun releaseAll() {
-        count.set(0)
-        if (wake.isHeld) wake.release()
-        if (wifi.isHeld) wifi.release()
+        holders.clear()
+        main.removeCallbacks(safety)
+        runCatching { if (wake.isHeld) wake.release() }
+        runCatching { if (wifi.isHeld) wifi.release() }
     }
 
     private companion object {

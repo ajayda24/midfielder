@@ -76,6 +76,13 @@ class ConnectionManager(
     @Volatile
     private var onLan = false
 
+    /** The Wi-Fi/Ethernet network we dial over (null: none, e.g. this phone is the hotspot; the default route then). */
+    @Volatile
+    private var lan: Network? = null
+
+    /** Sockets bound to the LAN, so a VPN or "mobile data as default" doesn't carry them off the local network. */
+    fun socketFactory(): javax.net.SocketFactory = lan?.socketFactory ?: javax.net.SocketFactory.getDefault()
+
     /** Called with true on screen-on (the service probes sessions then). */
     var onScreenChanged: (Boolean) -> Unit = {}
 
@@ -86,6 +93,7 @@ class ConnectionManager(
             val lan = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
             val changed = lan && !onLan
             onLan = lan
+            if (lan) this@ConnectionManager.lan = network
             if (changed) {
                 probeAll() // a session from before the switch may be half-open
                 kick("network")
@@ -93,6 +101,8 @@ class ConnectionManager(
         }
 
         override fun onLost(network: Network) {
+            if (lan != null && network != lan) return // another network went; ours is still up
+            lan = null
             onLan = false
             // Sessions over the lost network are dead but may not notice for a minute: check them now.
             probeAll()

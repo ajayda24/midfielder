@@ -16,12 +16,15 @@ import dev.midfielder.core.clip.ClipContent
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val uris = extractUris(intent)
+        // Only content from other apps: no file:// paths (they bypass Android's sharing permissions) and none of
+        // our own providers (a crafted share could otherwise send Midfielder's private files).
+        val uris = extractUris(intent).filter { it.scheme == "content" && it.authority?.startsWith(packageName) != true && it.authority != "dev.midfielder.clipimages" }
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         val target = intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID)
         // Helps Android rank the PC first in the share sheet next time.
         target?.let { id -> runCatching { getSystemService(ShortcutManager::class.java)?.reportShortcutUsed(id) } }
         when {
+            uris.isEmpty() && intent.action != Intent.ACTION_SEND -> Toast.makeText(this, "Nothing Midfielder can send", Toast.LENGTH_SHORT).show()
             uris.isNotEmpty() -> {
                 SyncService.sendUris(this, uris, target)
                 val what = if (uris.size == 1) "file" else "${uris.size} files"
@@ -32,8 +35,7 @@ class ShareActivity : Activity() {
                 if (engine != null) {
                     Toast.makeText(this, engine.onLocalClipboard(ClipContent.Text(text), force = true), Toast.LENGTH_SHORT).show()
                 } else {
-                    SyncService.start(this)
-                    Toast.makeText(this, "Midfielder is starting, try again in a moment", Toast.LENGTH_SHORT).show()
+                    SyncService.sendText(this, text)
                 }
             }
         }

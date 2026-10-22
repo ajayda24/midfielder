@@ -26,4 +26,9 @@ public data class NodeConfig(
      * Monotonic clock in ms. Android passes SystemClock.elapsedRealtime so time spent in deep sleep counts.
      */
     val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /**
+     * Where outgoing sockets come from, asked on every dial. Android returns the Wi-Fi network's factory, so a VPN
+     * or a Wi-Fi without internet (mobile data becomes the default) doesn't send LAN connections the wrong way.
+     */
+    val socketFactory: () -> javax.net.SocketFactory = { javax.net.SocketFactory.getDefault() },
 )

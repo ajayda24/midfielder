@@ -37,8 +37,14 @@ class ClipboardReaderActivity : Activity() {
         val app = applicationContext
         when {
             engine == null -> {
-                SyncService.start(this)
-                if (force) Toast.makeText(app, "Midfielder is starting. Try again in a moment.", Toast.LENGTH_SHORT).show()
+                // Text can wait in the service's start intent; an image would be too big for that.
+                val text = ((grab as? ClipboardBridge.Grab.Ready)?.content as? dev.midfielder.core.clip.ClipContent.Text)?.text
+                if (force && text != null) {
+                    SyncService.sendText(this, text)
+                } else {
+                    SyncService.start(this)
+                    if (force) Toast.makeText(app, "Midfielder is starting. Try again in a moment.", Toast.LENGTH_SHORT).show()
+                }
             }
             grab == null -> {
                 EventLog.add("Clipboard is empty, unchanged or unreadable")

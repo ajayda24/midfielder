@@ -93,7 +93,7 @@ class PhoneNotifications(
         val n = sbn.notification
         val (title, text) = titleAndText(n)
         if (title.isBlank() && text.isBlank()) return
-        val actions = n.actions.orEmpty()
+        val actions: Array<Notification.Action> = n.actions?.filterNotNull()?.toTypedArray() ?: emptyArray()
         val evicted = ArrayList<String>()
         synchronized(sent) {
             val previous = sent[sbn.key]

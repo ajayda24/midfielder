@@ -52,8 +52,9 @@ object FileActions {
             Intent(Intent.ACTION_VIEW).setDataAndType(folder, "resource/folder"),
             Intent(DownloadManager.ACTION_VIEW_DOWNLOADS),
         )
+        // No grant flag: the folder belongs to the system's documents provider, and granting a URI we don't own
+        // throws, which made the first (best) attempt always fail.
         for (i in attempts) {
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             if (runCatching { a.startActivity(i) }.isSuccess) return
         }
         toast(a, "No file manager found")
