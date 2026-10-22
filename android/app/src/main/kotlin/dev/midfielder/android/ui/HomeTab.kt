@@ -72,7 +72,11 @@ class HomeTab(host: MainActivity) : Tab(host) {
         val heroTop = ui.horizontal()
         heroTop.addView(ui.iconBadge(R.drawable.ic_laptop, 52, bg = ui.primary, fg = ui.onPrimary))
         val names = ui.vertical().apply { setPadding(ui.dp(16), 0, 0, 0) }
-        pcName = ui.oneLine(ui.text("", com.google.android.material.R.style.TextAppearance_Material3_TitleLarge, ui.onPrimaryContainer))
+        // Two lines: "No PC paired yet" or a long PC name must not be cut at large text sizes.
+        pcName = ui.text("", com.google.android.material.R.style.TextAppearance_Material3_TitleLarge, ui.onPrimaryContainer).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
         names.addView(pcName)
         statusChip = Chip(host).apply {
             isClickable = false
@@ -280,6 +284,8 @@ class HomeTab(host: MainActivity) : Tab(host) {
         // Read as words: TalkBack would say "black circle, Connected".
         statusChip.contentDescription = if (connected) "Connected" else statusChip.text
         statusChip.isClickable = !paired
+        // Unpaired, the "Pair with your PC" button already says what to do; a chip saying it too only crowds the hero.
+        statusChip.visibility = if (paired) View.VISIBLE else View.GONE
         statusChip.removeCallbacks(slowCheck)
         if (paired && !connected && !slow) statusChip.postDelayed(slowCheck, SLOW_SEARCH_MS + 500 - (now - lookingSince))
         (pairTile as? ViewGroup)?.findViewWithTag<TextView>(TITLE_TAG)?.text = if (paired) "Pair another PC" else "Pair PC"

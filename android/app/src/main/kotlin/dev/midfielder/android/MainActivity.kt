@@ -59,7 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var tabName = ""
     private var resumed = false
     private lateinit var content: FrameLayout
-    private lateinit var nav: BottomNavigationView
+    private lateinit var nav: NavigationBarView
     private val pendingDelete = ArrayList<String>()
     private var pendingInvite: String? = null
     private var pairing: AlertDialog? = null
@@ -177,13 +177,18 @@ class MainActivity : AppCompatActivity() {
     // Frame and tabs
 
     private fun buildFrame(): View {
+        // A phone on its side has little height: a rail on the left instead of a bar that takes a third of it.
+        val cfg = resources.configuration
+        val rail = cfg.screenWidthDp > cfg.screenHeightDp && cfg.screenHeightDp < 600
         val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = if (rail) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             setBackgroundColor(ui.surface)
         }
         content = FrameLayout(this)
-        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        nav = BottomNavigationView(this).apply {
+        nav = (if (rail) com.google.android.material.navigationrail.NavigationRailView(this).apply {
+            fitsSystemWindows = false // the root already keeps clear of the bars
+            menuGravity = android.view.Gravity.CENTER
+        } else BottomNavigationView(this)).apply {
             labelVisibilityMode = NavigationBarView.LABEL_VISIBILITY_LABELED
             setBackgroundColor(ui.container)
             itemActiveIndicatorColor = android.content.res.ColorStateList.valueOf(ui.primaryContainer)
@@ -198,7 +203,13 @@ class MainActivity : AppCompatActivity() {
                 if (name == TAB_SETTINGS && tabName == TAB_DEVELOPER) showTab(TAB_SETTINGS) else tab?.scrollToTop()
             }
         }
-        root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (rail) {
+            root.addView(nav, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            root.addView(content, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        } else {
+            root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         // Android 15+ draws edge to edge: keep content clear of the status bar, and of side bars and cutouts in
         // landscape (the bottom bar pads itself).
         root.setOnApplyWindowInsetsListener { v, insets ->
@@ -489,7 +500,8 @@ class MainActivity : AppCompatActivity() {
     /** Short message above the navigation bar, with an optional action (e.g. Undo). All feedback goes here. */
     fun snack(text: String, action: String? = null, onAction: (() -> Unit)? = null) {
         if (isFinishing || isDestroyed) return
-        val bar = Snackbar.make(content, text, Snackbar.LENGTH_LONG).setAnchorView(nav)
+        val bar = Snackbar.make(content, text, Snackbar.LENGTH_LONG)
+        if (nav is BottomNavigationView) bar.setAnchorView(nav)
         if (action != null && onAction != null) bar.setAction(action) { onAction() }
         bar.show()
     }
