@@ -70,7 +70,12 @@ class ScanActivity : Activity() {
         }
         // Edge to edge (Android 15+): keep the hint above the navigation bar.
         hint.setOnApplyWindowInsetsListener { v, insets ->
-            val bottom = insets.getInsets(android.view.WindowInsets.Type.systemBars()).bottom
+            val bottom = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(android.view.WindowInsets.Type.systemBars()).bottom
+            } else {
+                @Suppress("DEPRECATION")
+                insets.systemWindowInsetBottom
+            }
             v.setPadding(pad, pad, pad, pad + bottom)
             insets
         }

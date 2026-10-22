@@ -73,7 +73,7 @@ class DeveloperTab(host: MainActivity) : Tab(host) {
         val chips = ui.horizontal()
         chips.addView(ui.assistChip("Copy", R.drawable.ic_copy) {
             Setup.copy(host, logText())
-            host.snack("Log copied")
+            copied("Log copied")
         })
         chips.addView(ui.assistChip("Share", R.drawable.ic_share) {
             runCatching {
@@ -93,8 +93,23 @@ class DeveloperTab(host: MainActivity) : Tab(host) {
         }
         scope.launch {
             EventLog.entries.collect {
-                entries = it.take(MAX_SHOWN)
-                adapter.notifyDataSetChanged()
+                val old = entries
+                val new = it.take(MAX_SHOWN)
+                entries = new
+                // A new line slides in at the top; the rest of the log (and the header) stay put.
+                androidx.recyclerview.widget.DiffUtil.calculateDiff(object : androidx.recyclerview.widget.DiffUtil.Callback() {
+                    override fun getOldListSize() = old.size
+                    override fun getNewListSize() = new.size
+                    override fun areItemsTheSame(o: Int, n: Int) = old[o] === new[n] || old[o] == new[n]
+                    override fun areContentsTheSame(o: Int, n: Int) = old[o] == new[n]
+                }).dispatchUpdatesTo(object : androidx.recyclerview.widget.ListUpdateCallback {
+                    override fun onInserted(position: Int, count: Int) = adapter.notifyItemRangeInserted(position + HEADER_ITEMS, count)
+                    override fun onRemoved(position: Int, count: Int) = adapter.notifyItemRangeRemoved(position + HEADER_ITEMS, count)
+                    override fun onMoved(from: Int, to: Int) = adapter.notifyItemMoved(from + HEADER_ITEMS, to + HEADER_ITEMS)
+                    override fun onChanged(position: Int, count: Int, payload: Any?) = adapter.notifyItemRangeChanged(position + HEADER_ITEMS, count)
+                })
+                // The "last row" margin moved with the list.
+                if (new.isNotEmpty() && old.isNotEmpty()) adapter.notifyItemChanged(HEADER_ITEMS + minOf(old.size, new.size) - 1)
             }
         }
     }
@@ -108,8 +123,14 @@ class DeveloperTab(host: MainActivity) : Tab(host) {
         isClickable = true
         setOnClickListener {
             Setup.copy(host, cmd)
-            host.snack("Command copied")
+            copied("Command copied")
         }
+        foreground = ui.ripple()
+    }
+
+    /** Android 13+ shows its own "Copied" confirmation; a second one from us would just stack on top. */
+    private fun copied(text: String) {
+        if (android.os.Build.VERSION.SDK_INT < 33) host.snack(text)
     }
 
     private fun renderDiag(engine: SyncEngine) {
@@ -150,7 +171,8 @@ class DeveloperTab(host: MainActivity) : Tab(host) {
             setBackgroundColor(ui.containerLowest)
             layoutParams = RecyclerView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(stripe, LayoutParams(ui.dp(3), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = ui.dp(10) })
-            addView(time, LayoutParams(ui.dp(66), ViewGroup.LayoutParams.WRAP_CONTENT))
+            // As wide as the time needs (large fonts), not a fixed column that cuts it.
+            addView(time, LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = ui.dp(10) })
             addView(message, LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
 

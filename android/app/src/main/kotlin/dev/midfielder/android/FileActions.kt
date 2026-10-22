@@ -17,6 +17,17 @@ import dev.midfielder.core.history.TransferRecord
 object FileActions {
     fun uriOf(r: TransferRecord): Uri? = r.location.takeIf { it.startsWith("content://") || it.startsWith("file://") }?.let(Uri::parse)
 
+    /**
+     * Whether the phone can still open [r]. Received files are ours. A sent file was read through a permission the
+     * sharing app gave for that one share; once it's gone (the app or phone restarted), Open and Share would fail.
+     */
+    fun readable(c: Context, r: TransferRecord): Boolean {
+        val uri = uriOf(r) ?: return false
+        if (r.direction == dev.midfielder.core.history.Direction.RECEIVED) return true
+        if (c.checkCallingOrSelfUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED) return true
+        return c.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
+    }
+
     /** Opens the file in the app Android picks for its type (gallery for photos, PDF viewer, …). */
     fun open(a: Activity, r: TransferRecord) {
         val uri = uriOf(r) ?: return toast(a, "This file isn't on the phone")
@@ -79,5 +90,5 @@ object FileActions {
         return byId.filter { it.first !in present }.map { it.second }
     }
 
-    private fun toast(c: Context, s: String) = Toast.makeText(c, s, Toast.LENGTH_SHORT).show()
+    private fun toast(c: Context, s: String) = (c as? MainActivity)?.snack(s) ?: Toast.makeText(c, s, Toast.LENGTH_SHORT).show()
 }

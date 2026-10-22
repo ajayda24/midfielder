@@ -230,7 +230,24 @@ class Ui(val context: Context) {
 
     fun switchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit): LinearLayout {
         val sw = switch(checked, onChange)
-        return listRow(title, subtitle, trailing = sw) { sw.toggle() }
+        return listRow(title, subtitle, trailing = sw) { sw.toggle() }.also { asSwitch(it, sw) }
+    }
+
+    /**
+     * TalkBack reads [row] as one switch ("Clipboard sync, on, switch") instead of a text, then an unnamed
+     * switch: the inner switch is hidden from accessibility and the row reports its state.
+     */
+    fun asSwitch(row: View, sw: android.widget.CompoundButton) {
+        sw.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        sw.isFocusable = false
+        row.accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onInitializeAccessibilityNodeInfo(host: View, info: android.view.accessibility.AccessibilityNodeInfo) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                info.className = android.widget.Switch::class.java.name
+                info.isCheckable = true
+                info.isChecked = sw.isChecked
+            }
+        }
     }
 
     /** "Title ........ Action" row above a section. */

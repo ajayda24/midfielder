@@ -22,6 +22,8 @@ import dev.midfielder.core.net.TrustStore
 import dev.midfielder.proto.DeviceKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -192,6 +194,12 @@ class ConnectionManager(
             // session is probably half-open: check it now (a failed probe closes it and we redial).
             for (d in pcs) node.session(d.fingerprint)?.probe()
         }
+        // No Wi-Fi or Ethernet: a dial can only go over mobile data, where the PC isn't. Wait for the network
+        // callback instead, unless this phone is the hotspot (or tethered) the PC is on, or the PC just knocked.
+        if (!onLan && hint.reason != "knock" && !hostingLocalNetwork()) {
+            EventLog.add("Not on Wi-Fi: waiting for a network before connecting")
+            return
+        }
         val targets = pcs.filter { node.session(it.fingerprint) == null }
             .filterNot { hint.reason == "knock" && knockedRecently(it.deviceId) }
         if (targets.isEmpty()) return
@@ -220,14 +228,37 @@ class ConnectionManager(
         }
     }
 
-    private suspend fun connect(device: PairedDevice, hinted: HostPort?): Boolean {
-        val candidates = listOfNotNull(hinted, device.lastAddress?.let { runCatching { HostPort.parse(it) }.getOrNull() }).distinct()
+    /**
+     * The knock's address first, then the last address. Without a knock, the mDNS search runs alongside the
+     * last-address dial, so a PC whose address changed is found in one burst instead of after a dial timeout.
+     */
+    private suspend fun connect(device: PairedDevice, hinted: HostPort?): Boolean = coroutineScope {
+        val last = device.lastAddress?.let { runCatching { HostPort.parse(it) }.getOrNull() }
+        val candidates = listOfNotNull(hinted, last).distinct()
+        val search = if (hinted == null) async { discover(device.deviceId) } else null
         for (address in candidates) {
-            if (tryConnect(device, address)) return true
+            if (tryConnect(device, address)) {
+                search?.cancel()
+                return@coroutineScope true
+            }
         }
-        val found = discover(device.deviceId) ?: return false.also { EventLog.add("${device.name} not found on this network") }
-        return tryConnect(device, found)
+        val found = (search ?: async { discover(device.deviceId) }).await()
+        when {
+            found == null -> false.also { EventLog.add("${device.name} not found on this network") }
+            found in candidates -> false
+            else -> tryConnect(device, found)
+        }
     }
+
+    /** This phone is a hotspot or tethered: a local interface (not mobile data or a VPN) has a private address. */
+    private fun hostingLocalNetwork(): Boolean = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().any { nic ->
+            val name = nic.name.lowercase()
+            nic.isUp && !nic.isLoopback && !nic.isVirtual &&
+                listOf("rmnet", "ccmni", "v4-", "tun", "ppp", "dummy", "ipsec", "clat").none { name.startsWith(it) } &&
+                nic.inetAddresses.toList().any { it is java.net.Inet4Address && it.isSiteLocalAddress }
+        }
+    }.getOrDefault(true)
 
     private suspend fun tryConnect(device: PairedDevice, address: HostPort): Boolean = runCatching {
         node.connect(device, address)

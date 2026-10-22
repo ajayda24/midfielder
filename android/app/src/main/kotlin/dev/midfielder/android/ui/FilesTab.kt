@@ -8,6 +8,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
@@ -49,8 +50,14 @@ class FilesTab(host: MainActivity) : Tab(host) {
     private lateinit var titleBar: View
     private lateinit var selectBar: LinearLayout
     private lateinit var selectCount: TextView
+    private lateinit var emptyTitle: TextView
+    private lateinit var emptyText: TextView
+    private lateinit var emptyShowAll: View
+    private lateinit var chipIds: Map<Filter, Int>
+    private lateinit var chipGroup: ChipGroup
 
-    private val columns: Int get() = if (host.resources.configuration.screenWidthDp >= 600) 4 else 3
+    /** Tiles about 120 dp wide: 3 on a phone, more on a tablet or in landscape. */
+    private val columns: Int get() = (host.resources.configuration.screenWidthDp / 120).coerceIn(3, 6)
 
     override fun build(): View {
         val root = ui.vertical()
@@ -72,7 +79,15 @@ class FilesTab(host: MainActivity) : Tab(host) {
             selectCount = ui.text("", com.google.android.material.R.style.TextAppearance_Material3_TitleMedium, ui.onSecondaryContainer)
             addView(selectCount, ui.weight(1f, 4))
             addView(ui.iconButton(R.drawable.ic_share, "Share", ui.onSecondaryContainer) {
-                FileActions.share(host, selectedRecords().filter { r -> FileActions.uriOf(r) != null })
+                val records = selectedRecords()
+                val ok = records.filter { r -> FileActions.readable(host, r) }
+                if (ok.isEmpty()) {
+                    host.snack(if (records.size == 1) "This file is no longer on the phone" else "None of these files are on the phone anymore")
+                } else {
+                    if (ok.size < records.size) host.snack("${records.size - ok.size} of ${records.size} aren't on the phone anymore; sharing the rest")
+                    FileActions.share(host, ok)
+                    clearSelection()
+                }
             })
             addView(ui.iconButton(R.drawable.ic_delete, "Delete", ui.onSecondaryContainer) { deleteSelected() })
         }
@@ -86,13 +101,18 @@ class FilesTab(host: MainActivity) : Tab(host) {
         val ids = HashMap<Int, Filter>()
         for (f in Filter.entries) {
             val chip = ui.filterChip(f.label, f == filter)
+            if (chip.id == View.NO_ID) chip.id = View.generateViewId()
             ids[chip.id] = f
             chips.addView(chip)
         }
+        chipIds = ids.entries.associate { (id, f) -> f to id }
+        chipGroup = chips
         chips.setOnCheckedStateChangeListener { _, checked ->
             checked.firstOrNull()?.let { ids[it] }?.let {
+                if (it == filter) return@let
                 filter = it
                 reload()
+                list.scrollToPosition(0) // a new filter starts at the top, not mid-way down the old list
             }
         }
         root.addView(
@@ -122,10 +142,15 @@ class FilesTab(host: MainActivity) : Tab(host) {
             gravity = Gravity.CENTER
             setPadding(ui.dp(32), 0, ui.dp(32), ui.dp(48))
             addView(ui.iconBadge(R.drawable.ic_folder, 88, ui.secondaryContainer, ui.onSecondaryContainer))
-            addView(ui.titleLarge("No files yet").apply { setPadding(0, ui.dp(20), 0, ui.dp(6)) })
-            addView(ui.supporting("Files you send or receive show up here. Share anything and pick your PC to start.").apply {
+            emptyTitle = ui.titleLarge("No files yet").apply {
+                setPadding(0, ui.dp(20), 0, ui.dp(6))
                 gravity = Gravity.CENTER
-            })
+            }
+            addView(emptyTitle)
+            emptyText = ui.supporting("").apply { gravity = Gravity.CENTER }
+            addView(emptyText)
+            emptyShowAll = ui.button("Show all files", Ui.Button.TONAL) { chipIds[Filter.ALL]?.let { chipGroup.check(it) } }
+            addView(emptyShowAll, ui.wrap().apply { topMargin = ui.dp(16) })
         }
         content.addView(empty, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -167,11 +192,43 @@ class FilesTab(host: MainActivity) : Tab(host) {
             Filter.IMAGES -> all.filter { it.isImage }
         }
         selected.retainAll(records.map { it.id }.toSet())
-        items = grouped(records)
-        empty.visibility = if (records.isEmpty()) View.VISIBLE else View.GONE
-        list.visibility = if (records.isEmpty()) View.GONE else View.VISIBLE
-        adapter.notifyDataSetChanged()
+        val old = items
+        val new = grouped(records)
+        // Only what changed moves: a new file slides in, the rest keep their place and their thumbnails.
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize() = old.size
+            override fun getNewListSize() = new.size
+            override fun areItemsTheSame(o: Int, n: Int) = key(old[o]) == key(new[n])
+            override fun areContentsTheSame(o: Int, n: Int) = old[o] == new[n]
+        })
+        items = new
+        diff.dispatchUpdatesTo(adapter)
+        renderEmpty(all.isEmpty(), records.isEmpty())
         updateSelectionBar()
+    }
+
+    private fun key(i: Item): String = when (i) {
+        is Item.Header -> "h:" + i.title
+        is Item.Row -> i.record.id
+    }
+
+    private fun renderEmpty(nothingAtAll: Boolean, nothingHere: Boolean) {
+        empty.visibility = if (nothingHere) View.VISIBLE else View.GONE
+        list.visibility = if (nothingHere) View.GONE else View.VISIBLE
+        if (!nothingHere) return
+        emptyTitle.text = when {
+            nothingAtAll -> "No files yet"
+            filter == Filter.RECEIVED -> "Nothing received yet"
+            filter == Filter.SENT -> "Nothing sent yet"
+            else -> "No images yet"
+        }
+        emptyText.text = when {
+            nothingAtAll -> "Files you send or receive show up here. Share anything and pick your PC to start."
+            filter == Filter.RECEIVED -> "Files your PC sends to this phone show up here."
+            filter == Filter.SENT -> "Share a file and pick your PC, or tap Send files on Home."
+            else -> "Photos and screenshots you send or receive show up here."
+        }
+        emptyShowAll.visibility = if (nothingAtAll) View.GONE else View.VISIBLE
     }
 
     private fun grouped(records: List<TransferRecord>): List<Item> {
@@ -214,22 +271,29 @@ class FilesTab(host: MainActivity) : Tab(host) {
         items.mapNotNull { (it as? Item.Row)?.record }.filter { it.id in selected }
 
     private fun toggleSelection(r: TransferRecord) {
+        val wasEmpty = selected.isEmpty()
         if (!selected.remove(r.id)) selected += r.id
-        adapter.notifyDataSetChanged()
+        // Entering or leaving selection changes every row's ⋮ button; otherwise only this one row changes.
+        if (wasEmpty != selected.isEmpty()) selectionChanged()
+        else items.indexOfFirst { it is Item.Row && it.record.id == r.id }.takeIf { it >= 0 }?.let { adapter.notifyItemChanged(it, SELECTION) }
         updateSelectionBar()
     }
 
     private fun clearSelection() {
         selected.clear()
-        adapter.notifyDataSetChanged()
+        selectionChanged()
         updateSelectionBar()
     }
+
+    /** Rebinds only the selection look (no thumbnail reload, no flicker). */
+    private fun selectionChanged() = adapter.notifyItemRangeChanged(0, items.size, SELECTION)
 
     private fun updateSelectionBar() {
         val on = selected.isNotEmpty()
         selectBar.visibility = if (on) View.VISIBLE else View.GONE
         titleBar.visibility = if (on) View.GONE else View.VISIBLE
         selectCount.text = "${selected.size} selected"
+        selectCount.announceForAccessibility(selectCount.text)
     }
 
     private fun deleteSelected() {
@@ -238,10 +302,15 @@ class FilesTab(host: MainActivity) : Tab(host) {
         val onPhone = records.filter { it.direction == Direction.RECEIVED && FileActions.uriOf(it) != null }
         val others = records - onPhone.toSet()
         val what = if (records.size == 1) "\"${records[0].name}\"" else "${records.size} files"
+        val one = records.size == 1
         host.confirm(
             "Delete $what?",
-            if (onPhone.isNotEmpty()) "Received files are removed from Download/Midfielder. Sent files only leave this list."
-            else "They are removed from this list. The files themselves stay where they are.",
+            when {
+                onPhone.isNotEmpty() && others.isEmpty() -> if (one) "It's removed from Download/Midfielder." else "They're removed from Download/Midfielder."
+                onPhone.isNotEmpty() -> "Received files are removed from Download/Midfielder. Sent files only leave this list."
+                one -> "It's removed from this list. The file itself stays where it is."
+                else -> "They're removed from this list. The files themselves stay where they are."
+            },
             "Delete",
         ) {
             if (onPhone.isNotEmpty()) host.deleteReceived(onPhone)
@@ -260,7 +329,7 @@ class FilesTab(host: MainActivity) : Tab(host) {
             menu.add("Open folder").setOnMenuItemClickListener { FileActions.openFolder(host); true }
             menu.add("Select all").setOnMenuItemClickListener {
                 items.forEach { if (it is Item.Row) selected += it.record.id }
-                adapter.notifyDataSetChanged()
+                selectionChanged()
                 updateSelectionBar()
                 true
             }
@@ -273,7 +342,7 @@ class FilesTab(host: MainActivity) : Tab(host) {
     }
 
     private fun itemMenu(anchor: View, r: TransferRecord) {
-        val onPhone = FileActions.uriOf(r) != null
+        val onPhone = FileActions.readable(host, r)
         PopupMenu(host, anchor).apply {
             if (onPhone) {
                 menu.add("Open").setOnMenuItemClickListener { FileActions.open(host, r); true }
@@ -316,6 +385,17 @@ class FilesTab(host: MainActivity) : Tab(host) {
                 else -> RowView()
             },
         )
+
+        override fun onBindViewHolder(holder: Holder, position: Int, payloads: MutableList<Any>) {
+            if (payloads.isNotEmpty() && payloads.all { it == SELECTION }) {
+                when (val v = holder.itemView) {
+                    is RowView -> v.bindSelection()
+                    is TileView -> v.bindSelection()
+                }
+                return
+            }
+            onBindViewHolder(holder, position)
+        }
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
             when (val item = items[position]) {
@@ -373,21 +453,28 @@ class FilesTab(host: MainActivity) : Tab(host) {
             record = r
             name.text = r.name
             val dir = if (r.direction == Direction.SENT) "To ${r.peer}" else "From ${r.peer}"
+            // A problem comes first, where it's seen even when the line is cut short.
             val state = when (r.status) {
                 RecordStatus.DONE -> ""
-                RecordStatus.FAILED -> " · Failed"
-                RecordStatus.CANCELLED -> " · Cancelled"
+                RecordStatus.FAILED -> if (r.direction == Direction.SENT) "Not sent · " else "Failed · "
+                RecordStatus.CANCELLED -> "Cancelled · "
             }
-            meta.text = "${Format.bytes(r.size)} · $dir · ${Format.time(r.timeMs)}$state"
+            meta.text = "$state${Format.bytes(r.size)} · $dir · ${Format.time(r.timeMs)}"
+            contentDescription = "${r.name}. ${meta.text}"
             meta.setTextColor(if (r.status == RecordStatus.DONE) ui.onSurfaceVariant else ui.errorColor)
             (badge as? FrameLayout)?.getChildAt(0)?.let {
                 (it as android.widget.ImageView).setImageResource(if (r.direction == Direction.SENT) R.drawable.ic_upload else R.drawable.ic_download)
             }
-            val isSelected = r.id in selected
+            bindSelection()
+            Thumbs.bind(ui, thumb, r, thumbs, ui.dp(56))
+        }
+
+        fun bindSelection() {
+            val isSelected = record?.id in selected
             check.visibility = if (isSelected) View.VISIBLE else View.GONE
             background = if (isSelected) ui.pill(ui.secondaryContainer, 16) else ui.ripple()
             more.visibility = if (selected.isEmpty()) View.VISIBLE else View.INVISIBLE
-            Thumbs.bind(ui, thumb, r, thumbs, ui.dp(56))
+            this.isSelected = isSelected
         }
     }
 
@@ -403,6 +490,7 @@ class FilesTab(host: MainActivity) : Tab(host) {
         }
         private val check = ui.iconBadge(R.drawable.ic_check, 26, ui.primary, ui.onPrimary)
         private val video = ui.iconBadge(R.drawable.ic_play, 32, 0x99000000.toInt(), 0xFFFFFFFF.toInt())
+        private val failed = ui.iconBadge(R.drawable.ic_close, 22, ui.errorColor, ui.color(com.google.android.material.R.attr.colorOnError))
         private var record: TransferRecord? = null
 
         init {
@@ -413,6 +501,7 @@ class FilesTab(host: MainActivity) : Tab(host) {
             addView(label, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
             addView(video, LayoutParams(ui.dp(32), ui.dp(32), Gravity.CENTER))
             addView(check, LayoutParams(ui.dp(26), ui.dp(26), Gravity.TOP or Gravity.END).apply { setMargins(0, ui.dp(8), ui.dp(8), 0) })
+            addView(failed, LayoutParams(ui.dp(22), ui.dp(22), Gravity.TOP or Gravity.START).apply { setMargins(ui.dp(8), ui.dp(8), 0, 0) })
             isClickable = true
             foreground = ui.ripple()
             setOnClickListener { record?.let(::click) }
@@ -430,10 +519,22 @@ class FilesTab(host: MainActivity) : Tab(host) {
             label.text = if (isMedia) "" else r.name
             label.visibility = if (isMedia) View.GONE else View.VISIBLE
             video.visibility = if (r.mime.startsWith("video/")) View.VISIBLE else View.GONE
-            val isSelected = r.id in selected
+            failed.visibility = if (r.status == RecordStatus.DONE) View.GONE else View.VISIBLE
+            val state = when (r.status) {
+                RecordStatus.DONE -> ""
+                RecordStatus.FAILED -> if (r.direction == Direction.SENT) ", not sent" else ", failed"
+                RecordStatus.CANCELLED -> ", cancelled"
+            }
+            contentDescription = "${r.name}$state, ${if (r.direction == Direction.SENT) "to" else "from"} ${r.peer}, ${Format.time(r.timeMs)}"
+            bindSelection()
+            Thumbs.bind(ui, thumb, r, thumbs, ui.dp(140))
+        }
+
+        fun bindSelection() {
+            val isSelected = record?.id in selected
             check.visibility = if (isSelected) View.VISIBLE else View.GONE
             thumb.alpha = if (isSelected) 0.7f else 1f
-            Thumbs.bind(ui, thumb, r, thumbs, ui.dp(140))
+            this.isSelected = isSelected
         }
     }
 
@@ -441,5 +542,6 @@ class FilesTab(host: MainActivity) : Tab(host) {
         // Remembered while the app process lives, so switching tabs keeps your view.
         var gallery = false
         var filter = Filter.ALL
+        val SELECTION = Any()
     }
 }

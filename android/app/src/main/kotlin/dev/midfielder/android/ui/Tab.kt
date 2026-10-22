@@ -42,10 +42,17 @@ abstract class Tab(protected val host: MainActivity) {
     /** Back press: return true if the tab handled it (e.g. leaving selection mode). */
     open fun onBack(): Boolean = false
 
+    /**
+     * The running engine. If it isn't up after a second (the service was stopped, or Android refused to start it
+     * in the background), it's started again from here, while the screen is in front, where that's allowed.
+     */
     protected suspend fun engine(): SyncEngine {
+        var waited = 0
         while (true) {
             SyncEngine.current?.let { return it }
+            if (waited == 1_000 || waited % 10_000 == 0 && waited > 0) runCatching { dev.midfielder.android.SyncService.start(host) }
             delay(100)
+            waited += 100
         }
     }
 

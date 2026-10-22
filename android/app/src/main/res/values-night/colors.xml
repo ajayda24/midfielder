@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material 3 dark scheme from the same seed #1F6F5C: light-green accents on near-black green surfaces. -->
+    <color name="md_primary">#FF8CD5BD</color>
+    <color name="md_on_primary">#FF00382C</color>
+    <color name="md_primary_container">#FF005142</color>
+    <color name="md_on_primary_container">#FFA8F2D8</color>
+    <color name="md_secondary">#FFB2CCC1</color>
+    <color name="md_on_secondary">#FF1E352E</color>
+    <color name="md_secondary_container">#FF344C44</color>
+    <color name="md_on_secondary_container">#FFCEE9DD</color>
+    <color name="md_tertiary">#FFA7CCE0</color>
+    <color name="md_on_tertiary">#FF0C3445</color>
+    <color name="md_tertiary_container">#FF264B5D</color>
+    <color name="md_on_tertiary_container">#FFC3E8FD</color>
+    <color name="md_error">#FFFFB4AB</color>
+    <color name="md_on_error">#FF690005</color>
+    <color name="md_error_container">#FF93000A</color>
+    <color name="md_on_error_container">#FFFFDAD6</color>
+    <color name="md_background">#FF0F1512</color>
+    <color name="md_on_background">#FFDEE4E0</color>
+    <color name="md_surface">#FF0F1512</color>
+    <color name="md_on_surface">#FFDEE4E0</color>
+    <color name="md_surface_variant">#FF3F4945</color>
+    <color name="md_on_surface_variant">#FFBFC9C3</color>
+    <color name="md_outline">#FF89938E</color>
+    <color name="md_outline_variant">#FF3F4945</color>
+    <color name="md_surface_container_lowest">#FF0A0F0D</color>
+    <color name="md_surface_container_low">#FF171D1A</color>
+    <color name="md_surface_container">#FF1B211E</color>
+    <color name="md_surface_container_high">#FF252B29</color>
+    <color name="md_surface_container_highest">#FF303633</color>
+    <color name="md_inverse_surface">#FFDEE4E0</color>
+    <color name="md_inverse_on_surface">#FF2B322F</color>
+    <color name="md_inverse_primary">#FF1F6F5C</color>
+</resources>

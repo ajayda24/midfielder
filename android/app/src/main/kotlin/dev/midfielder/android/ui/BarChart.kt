@@ -21,6 +21,8 @@ class BarChart(context: Context, private val bar: Int, private val today: Int, l
     private var values: List<Long> = emptyList()
     private var labels: List<String> = emptyList()
 
+    private fun textHeight(): Float = label.fontMetrics.let { it.descent - it.ascent }
+
     fun set(values: List<Long>, labels: List<String>) {
         if (values == this.values && labels == this.labels) return
         this.values = values
@@ -30,13 +32,14 @@ class BarChart(context: Context, private val bar: Int, private val today: Int, l
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), (120 * density).toInt())
+        // Room for two lines of text (value above, day below) at whatever font size the user picked.
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), (88 * density + 2 * textHeight()).toInt())
     }
 
     override fun onDraw(canvas: Canvas) {
         if (values.isEmpty()) return
-        val labelSpace = 20 * density
-        val top = 18 * density
+        val labelSpace = textHeight() + 6 * density
+        val top = textHeight() + 4 * density
         val chartH = height - labelSpace - top
         val slot = width / values.size.toFloat()
         val barW = (slot * 0.56f).coerceAtMost(32 * density)
@@ -50,7 +53,7 @@ class BarChart(context: Context, private val bar: Int, private val today: Int, l
             rect.set(cx - barW / 2, top + chartH - h, cx + barW / 2, top + chartH)
             canvas.drawRoundRect(rect, r, r, paint)
             if (v > 0 && (isToday || v == max)) canvas.drawText(v.toString(), cx, rect.top - 4 * density, value)
-            labels.getOrNull(i)?.let { canvas.drawText(it, cx, height - 4 * density, label) }
+            labels.getOrNull(i)?.let { canvas.drawText(it, cx, height - label.fontMetrics.descent - 2 * density, label) }
         }
     }
 }

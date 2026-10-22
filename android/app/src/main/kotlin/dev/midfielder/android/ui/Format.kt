@@ -11,6 +11,8 @@ object Format {
         else -> String.format(Locale.US, "%.2f GB", n / (1024.0 * 1024 * 1024))
     }
 
+    /** "Just now" under a minute (Android would say "0 min. ago"), then "5 min. ago", "Yesterday", a date. */
     fun time(ms: Long, nowMs: Long = System.currentTimeMillis()): String =
-        DateUtils.getRelativeTimeSpanString(ms, nowMs, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
+        if (nowMs - ms in 0 until DateUtils.MINUTE_IN_MILLIS) "Just now"
+        else DateUtils.getRelativeTimeSpanString(ms, nowMs, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE).toString()
 }

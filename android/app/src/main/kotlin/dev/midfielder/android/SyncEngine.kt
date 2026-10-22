@@ -208,7 +208,8 @@ class SyncEngine(context: Context) : Closeable {
     val captureMode: String
         get() = when {
             triggers.logAccessActive -> "Automatic (log access approved)"
-            triggers.hasReadLogs && !isAccessibilityOn() -> "Needs approval: reopen Midfielder and tap \"Allow\" when Android asks"
+            triggers.logAccessRefused && !isAccessibilityOn() -> "Log access not allowed: tap Ask in Settings to try again"
+            triggers.hasReadLogs && !isAccessibilityOn() -> "Needs approval: tap \"Allow\" when Android asks"
             isAccessibilityOn() -> "Automatic (accessibility)"
             else -> "Tap \"Send clipboard\" (or enable automatic mode)"
         }
@@ -263,6 +264,14 @@ class SyncEngine(context: Context) : Closeable {
 
     /** True once Android approved log access, so copies are detected without any tap. */
     val logDetectionActive: Boolean get() = triggers.logAccessActive
+
+    /** The Settings "Ask" button: show Android's log-access prompt again, even after earlier refusals. */
+    fun askLogAccess() {
+        uiInForeground = true
+        triggers.ensureLogReader(inForeground = true, userAsked = true)
+    }
+
+    val logAccessRefused: Boolean get() = triggers.logAccessRefused
 
     /** Midfielder's screen came to the front: the moment Android can show the log-access prompt. */
     fun onUiResumed() {
@@ -506,7 +515,11 @@ class SyncEngine(context: Context) : Closeable {
     private fun applyClipboardFile(path: String) {
         scope.launch(Dispatchers.IO) {
             val file = File(path)
-            runCatching { applyToClipboard(ClipContent.Image(file.readBytes())) }
+            runCatching {
+                val uri = ClipImageProvider.storeFile(app, file)
+                clipboard.writeImage(uri)
+                notifications.clipImage(uri)
+            }.onFailure { EventLog.error("Putting the PC's image on the clipboard failed", it) }
             file.delete()
         }
     }

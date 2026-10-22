@@ -61,13 +61,14 @@ object Setup {
             when {
                 approved -> "On (log access approved)"
                 accessibility -> "On (accessibility)"
+                readLogs && SyncEngine.current?.logAccessRefused == true -> "Not allowed yet. Tap Ask, then \"Allow\""
                 readLogs -> "Tap Ask, then \"Allow\" when Android asks"
                 else -> "One-time ADB command, or turn on accessibility"
             },
             approved || accessibility, if (readLogs) "Ask" else "Set up",
         ) { act ->
             if (readLogs) {
-                SyncEngine.current?.onUiResumed()
+                SyncEngine.current?.askLogAccess()
             } else {
                 showDetectionHelp(act)
             }

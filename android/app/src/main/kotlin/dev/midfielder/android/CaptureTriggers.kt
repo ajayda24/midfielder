@@ -60,17 +60,32 @@ class CaptureTriggers(
      * Starts the log reader if it isn't running yet. Call when Midfielder's screen is in front, so Android can
      * show its approval prompt. A reader that is running but not approved is restarted then, for a new prompt.
      */
-    fun ensureLogReader(inForeground: Boolean = false) {
+    fun ensureLogReader(inForeground: Boolean = false, userAsked: Boolean = false) {
         if (!hasReadLogs) return
         synchronized(readerLock) {
             val running = logcatJob?.isActive == true
             if (running && (logAccessActive || !inForeground)) return
             // A reader started moments ago may still be waiting for the user to answer Android's prompt.
             if (running && SystemClock.elapsedRealtime() - readerStartedAt < PROMPT_GRACE_MS) return
+            // A reader that was shown the prompt and still isn't approved: the user said no (or ignored it).
+            if (running && promptedInForeground) refusals++
+            if (userAsked) refusals = 0
+            // After two refusals, stop asking every time Midfielder opens; the Settings "Ask" button asks again.
+            if (inForeground && refusals >= MAX_REFUSALS) return
             stopLogcatLocked()
             startLogcatLocked()
+            promptedInForeground = inForeground
         }
     }
+
+    private val prefs = app.getSharedPreferences("capture", Context.MODE_PRIVATE)
+    private var promptedInForeground = false
+    private var refusals: Int
+        get() = prefs.getInt("log_refusals", 0)
+        set(v) = prefs.edit().putInt("log_refusals", v).apply()
+
+    /** The user turned down Android's log-access prompt and Midfielder stopped asking on its own. */
+    val logAccessRefused: Boolean get() = hasReadLogs && !logAccessActive && refusals >= MAX_REFUSALS
 
     fun stop() {
         clipboard.removePrimaryClipChangedListener(listener)
@@ -162,5 +177,6 @@ class CaptureTriggers(
     private companion object {
         const val DEBOUNCE_MS = 300L
         const val PROMPT_GRACE_MS = 15_000L
+        const val MAX_REFUSALS = 2
     }
 }

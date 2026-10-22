@@ -82,6 +82,12 @@ class ClipboardBridge(context: Context) {
         return imageUri
     }
 
+    /** Puts an image Midfielder already stored in [ClipImageProvider] on the clipboard. */
+    fun writeImage(uri: Uri) {
+        suppressUntil = SystemClock.elapsedRealtime() + SUPPRESS_MS
+        clipboard.setPrimaryClip(ClipData.newUri(app.contentResolver, "Midfielder image", uri))
+    }
+
     fun addListener(listener: ClipboardManager.OnPrimaryClipChangedListener) = clipboard.addPrimaryClipChangedListener(listener)
     fun removeListener(listener: ClipboardManager.OnPrimaryClipChangedListener) = clipboard.removePrimaryClipChangedListener(listener)
 

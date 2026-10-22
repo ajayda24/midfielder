@@ -56,6 +56,11 @@ class HomeTab(host: MainActivity) : Tab(host) {
     private lateinit var weekText: TextView
     private lateinit var chart: BarChart
     private var thumbs: ThumbnailLoader? = null
+    private lateinit var pairTile: View
+
+    /** When the current "Looking for your PC" started (elapsed ms), to add a hint if it takes long. */
+    private var lookingSince = 0L
+    private val slowCheck = Runnable { SyncEngine.current?.let { if (lookingSince != 0L) renderStatus(it) } }
 
     override fun build(): View {
         val root = page()
@@ -71,6 +76,7 @@ class HomeTab(host: MainActivity) : Tab(host) {
         names.addView(pcName)
         statusChip = Chip(host).apply {
             isClickable = false
+            setOnClickListener { if (SyncEngine.current?.status?.value?.paired.isNullOrEmpty()) host.startScan() }
             chipStrokeWidth = 0f
             textSize = 12f
             chipMinHeight = ui.dpf(26f)
@@ -114,7 +120,8 @@ class HomeTab(host: MainActivity) : Tab(host) {
         grid.addView(tile(R.drawable.ic_copy, "Clipboard", "Send it to your PC") { host.sendClipboardNow() }, cell(0))
         grid.addView(tile(R.drawable.ic_upload, "Send files", "Photos, docs, more") { host.pickFiles() }, cell(1))
         grid.addView(tile(R.drawable.ic_folder, "Received", "Open the folder") { FileActions.openFolder(host) }, cell(0))
-        grid.addView(tile(R.drawable.ic_qr, "Pair PC", "Scan a code") { host.startScan() }, cell(1))
+        pairTile = tile(R.drawable.ic_qr, "Pair PC", "Scan a code") { host.startScan() }
+        grid.addView(pairTile, cell(1))
         root.addView(grid, ui.matchWidth(12))
 
         // With the PC: one compact row, each tile only while its feature is on (on both devices). Kept out of the
@@ -183,7 +190,10 @@ class HomeTab(host: MainActivity) : Tab(host) {
         val box = ui.card(Ui.Card.FILLED, paddingDp = 12)
         box.body.gravity = android.view.Gravity.CENTER_HORIZONTAL
         box.body.addView(ui.iconBadge(icon, 36, ui.secondaryContainer, ui.onSecondaryContainer, cornerDp = 12))
-        val label = ui.oneLine(ui.text(title, com.google.android.material.R.style.TextAppearance_Material3_LabelLarge, ui.onSurface)).apply {
+        // Two lines, not one: with large text "Stop PC audio" must not become "Stop PC…".
+        val label = ui.text(title, com.google.android.material.R.style.TextAppearance_Material3_LabelLarge, ui.onSurface).apply {
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(0, ui.dp(8), 0, 0)
             gravity = android.view.Gravity.CENTER_HORIZONTAL
         }
@@ -199,9 +209,11 @@ class HomeTab(host: MainActivity) : Tab(host) {
         box.body.addView(ui.iconBadge(icon, 44, ui.secondaryContainer, ui.onSecondaryContainer, cornerDp = 14))
         box.body.addView(ui.oneLine(ui.text(title, com.google.android.material.R.style.TextAppearance_Material3_TitleSmall, ui.onSurface)).apply {
             setPadding(0, ui.dp(12), 0, 0)
+            tag = TITLE_TAG
         })
         box.body.addView(ui.oneLine(ui.small(sub)))
         box.card.isClickable = true
+        box.card.contentDescription = "$title. $sub"
         box.card.setOnClickListener { onClick() }
         return box.card
     }
@@ -236,6 +248,7 @@ class HomeTab(host: MainActivity) : Tab(host) {
     override fun stop() {
         thumbs?.close()
         thumbs = null
+        shownRecent = null // thumbnails still loading were cut off with the loader: rebind on return
     }
 
     fun refreshSetup() {
@@ -255,11 +268,21 @@ class HomeTab(host: MainActivity) : Tab(host) {
             paired -> s.paired.joinToString()
             else -> "No PC paired yet"
         }
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (connected || !paired) lookingSince = 0L else if (lookingSince == 0L) lookingSince = now
+        val slow = lookingSince != 0L && now - lookingSince > SLOW_SEARCH_MS
         statusChip.text = when {
             connected -> "● Connected"
+            paired && slow -> "Looking for your PC… Same Wi-Fi?"
             paired -> "Looking for your PC…"
             else -> "Scan the code on your PC"
         }
+        // Read as words: TalkBack would say "black circle, Connected".
+        statusChip.contentDescription = if (connected) "Connected" else statusChip.text
+        statusChip.isClickable = !paired
+        statusChip.removeCallbacks(slowCheck)
+        if (paired && !connected && !slow) statusChip.postDelayed(slowCheck, SLOW_SEARCH_MS + 500 - (now - lookingSince))
+        (pairTile as? ViewGroup)?.findViewWithTag<TextView>(TITLE_TAG)?.text = if (paired) "Pair another PC" else "Pair PC"
         statusChip.chipBackgroundColor = android.content.res.ColorStateList.valueOf(if (connected) ui.primary else ui.containerLowest)
         statusChip.setTextColor(if (connected) ui.onPrimary else ui.onPrimaryContainer)
         pairButton.visibility = if (paired) View.GONE else View.VISIBLE
@@ -297,34 +320,52 @@ class HomeTab(host: MainActivity) : Tab(host) {
         if (!sent) host.snack("Turn on Audio in Midfielder on your PC too")
     }
 
+    private class TransferRow(val view: View, val detail: TextView, val bar: com.google.android.material.progressindicator.LinearProgressIndicator)
+
+    private val transferRows = LinkedHashMap<String, TransferRow>()
+
+    /**
+     * Rows are kept per transfer and only their text and bar change: rebuilding them on every progress tick
+     * restarted the bar's animation from 0 and could swallow a tap on Cancel.
+     */
     private fun renderTransfers(list: List<ActiveTransfer>) {
         transfersCard.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-        transfersList.removeAllViews()
-        for (t in list) transfersList.addView(transferRow(t))
+        val ids = list.map { it.id }.toSet()
+        transferRows.keys.filter { it !in ids }.forEach { id -> transferRows.remove(id)?.let { transfersList.removeView(it.view) } }
+        for (t in list) {
+            val row = transferRows.getOrPut(t.id) { transferRow(t).also { transfersList.addView(it.view) } }
+            val pct = if (t.percent >= 0) " · ${t.percent}%" else ""
+            val verb = if (t.direction == Direction.SENT) "to" else "from"
+            row.detail.text = "${Format.bytes(t.done)} of ${Format.bytes(t.total)} $verb ${t.peer}$pct"
+            row.bar.isIndeterminate = t.percent < 0
+            if (t.percent >= 0) row.bar.setProgressCompat(t.percent, true)
+        }
     }
 
-    private fun transferRow(t: ActiveTransfer): View {
+    private fun transferRow(t: ActiveTransfer): TransferRow {
         val box = ui.vertical().apply { setPadding(0, ui.dp(12), 0, 0) }
         val top = ui.horizontal()
         top.addView(ui.iconBadge(if (t.direction == Direction.SENT) R.drawable.ic_upload else R.drawable.ic_download, 40))
         val texts = ui.vertical().apply { setPadding(ui.dp(12), 0, 0, 0) }
         texts.addView(ui.oneLine(ui.title(t.title), TextUtils.TruncateAt.MIDDLE))
-        val pct = if (t.percent >= 0) " · ${t.percent}%" else ""
-        val verb = if (t.direction == Direction.SENT) "to" else "from"
-        texts.addView(ui.oneLine(ui.small("${Format.bytes(t.done)} of ${Format.bytes(t.total)} $verb ${t.peer}$pct")))
+        val detail = ui.oneLine(ui.small(""))
+        texts.addView(detail)
         top.addView(texts, ui.weight())
-        top.addView(ui.iconButton(R.drawable.ic_close, "Cancel") { SyncEngine.current?.cancelTransfer(t.id) })
+        top.addView(ui.iconButton(R.drawable.ic_close, "Cancel ${t.title}") { SyncEngine.current?.cancelTransfer(t.id) })
         box.addView(top)
-        box.addView(ui.progress().apply {
-            isIndeterminate = t.percent < 0
-            if (t.percent >= 0) setProgressCompat(t.percent, true)
-        }, ui.matchWidth(10))
-        return box
+        val bar = ui.progress()
+        box.addView(bar, ui.matchWidth(10))
+        return TransferRow(box, detail, bar)
     }
+
+    private var shownRecent: List<dev.midfielder.core.history.TransferRecord>? = null
 
     private fun renderRecent() {
         if (!::recentStrip.isInitialized) return
         val recent = HistoryStore.get(host).records().take(10)
+        // History changes on every clipboard sync too: rebuild the strip only when its files changed.
+        if (recent == shownRecent) return
+        shownRecent = recent
         recentHeader.visibility = if (recent.isEmpty()) View.GONE else View.VISIBLE
         recentScroll.visibility = recentHeader.visibility
         recentStrip.removeAllViews()
@@ -334,6 +375,8 @@ class HomeTab(host: MainActivity) : Tab(host) {
                 isClickable = true
                 background = ui.ripple()
                 setOnClickListener { FileActions.open(host, r) }
+                contentDescription = "${r.name}, ${if (r.direction == Direction.SENT) "sent to" else "from"} ${r.peer}" +
+                    if (r.status != dev.midfielder.core.history.RecordStatus.DONE) ", not completed" else ""
             }
             val frame = FrameLayout(host)
             val image = ShapeableImageView(host).apply {
@@ -366,5 +409,10 @@ class HomeTab(host: MainActivity) : Tab(host) {
         chart.set(days.map { it.clips + it.files }, labels)
         val week = days.reduce { a, b -> a + b }
         weekText.text = "Last 7 days: ${week.clips} clips · ${week.files} files · ${Format.bytes(week.bytes)}"
+    }
+
+    private companion object {
+        const val SLOW_SEARCH_MS = 30_000L
+        const val TITLE_TAG = "tile-title"
     }
 }

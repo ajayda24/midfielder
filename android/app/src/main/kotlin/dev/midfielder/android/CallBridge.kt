@@ -68,8 +68,10 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
         app.registerReceiver(r, IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED))
         // A call already in progress when the feature is turned on (or the app restarted) still shows on the PC.
         val telephony = app.getSystemService(TelephonyManager::class.java)
+        // Android 12+ needs Phone permission for this; without it the receiver above still works.
         @Suppress("DEPRECATION")
-        val now = runCatching { telephony?.callState }.getOrNull()
+        @android.annotation.SuppressLint("MissingPermission")
+        val now = if (granted(app, android.Manifest.permission.READ_PHONE_STATE)) runCatching { telephony?.callState }.getOrNull() else null
         when (now) {
             TelephonyManager.CALL_STATE_RINGING -> worker.execute { onState(TelephonyManager.EXTRA_STATE_RINGING, "") }
             TelephonyManager.CALL_STATE_OFFHOOK -> worker.execute { onState(TelephonyManager.EXTRA_STATE_OFFHOOK, "") }
@@ -218,8 +220,7 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
                 EventLog.add(if (resultCode == android.app.Activity.RESULT_OK) "Sent the quick reply to the caller" else "The quick reply wasn't sent (error $resultCode)")
             }
         }
-        if (android.os.Build.VERSION.SDK_INT >= 33) app.registerReceiver(receiver, IntentFilter(ACTION_SMS_SENT), Context.RECEIVER_NOT_EXPORTED)
-        else app.registerReceiver(receiver, IntentFilter(ACTION_SMS_SENT))
+        androidx.core.content.ContextCompat.registerReceiver(app, receiver, IntentFilter(ACTION_SMS_SENT), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         manager.sendMultipartTextMessage(to, null, parts, ArrayList(parts.map { sent }), null)
     }
 

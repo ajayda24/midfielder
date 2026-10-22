@@ -43,10 +43,20 @@ class ClipImageProvider : ContentProvider() {
 
         private fun dir(context: Context) = File(context.cacheDir, "clip").apply { mkdirs() }
 
-        fun store(context: Context, png: ByteArray): Uri {
+        fun store(context: Context, png: ByteArray): Uri = keep(context) { it.writeBytes(png) }
+
+        /** Takes over a received PNG file (a rename, same disk): a 60 MB image never has to be read into memory. */
+        fun storeFile(context: Context, png: File): Uri = keep(context) { target ->
+            if (!png.renameTo(target)) {
+                png.copyTo(target, overwrite = true)
+                png.delete()
+            }
+        }
+
+        private fun keep(context: Context, write: (File) -> Unit): Uri {
             val d = dir(context)
             val file = File(d, "clip-${System.currentTimeMillis()}.png")
-            file.writeBytes(png)
+            write(file)
             d.listFiles()?.sortedByDescending { it.lastModified() }?.drop(KEEP)?.forEach { it.delete() }
             return Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(file.name).build()
         }

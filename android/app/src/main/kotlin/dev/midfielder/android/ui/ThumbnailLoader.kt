@@ -29,10 +29,15 @@ class ThumbnailLoader(context: Context) {
     @Volatile
     private var closed = false
 
+    /** Files without a thumbnail (deleted, unreadable, no preview): not asked again on every scroll. */
+    private val failed: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
+
     /** Shows the thumbnail of [uri] in [view] ([loaded] runs after), or [fallback]'s placeholder if there is none. */
     fun load(uri: Uri, sizePx: Int, view: ImageView, fallback: () -> Unit, loaded: () -> Unit) {
-        inFlight.remove(view)?.cancel()
         val key = "$uri@$sizePx"
+        // Rebinding the same file (a list update, a selection change): keep the picture, no placeholder flash.
+        if (view.tag == key && view.drawable is android.graphics.drawable.BitmapDrawable && !inFlight.containsKey(view)) return
+        inFlight.remove(view)?.cancel()
         view.tag = key
         cache.get(key)?.let {
             view.setImageBitmap(it)
@@ -41,12 +46,12 @@ class ThumbnailLoader(context: Context) {
             return
         }
         fallback()
-        if (closed) return
+        if (closed || key in failed) return
         val signal = CancellationSignal()
         inFlight[view] = signal
         workers.execute {
             val bmp = if (signal.isCanceled) null else runCatching { resolver.loadThumbnail(uri, Size(sizePx, sizePx), signal) }.getOrNull()
-            if (bmp != null) cache.put(key, bmp)
+            if (bmp != null) cache.put(key, bmp) else if (!signal.isCanceled) synchronized(failed) { failed += key }
             main.post {
                 if (closed || view.tag != key) return@post
                 inFlight.remove(view)

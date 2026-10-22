@@ -138,8 +138,18 @@ class AppStorage(context: Context) {
         return identity
     }
 
-    /** Paired PCs, written through to encrypted storage on every change (rare). Loaded on first use. */
-    val trustStore: TrustStore by lazy { createTrustStore() }
+    /**
+     * Paired PCs, written through to encrypted storage on every change (rare). Loaded on first use, once per
+     * process: the service and the screens each make an AppStorage, and separate copies would go stale (a PC
+     * paired by the service wouldn't show in Settings) or overwrite each other.
+     */
+    val trustStore: TrustStore
+        get() = SharedTrust.store ?: synchronized(SharedTrust) { SharedTrust.store ?: createTrustStore().also { SharedTrust.store = it } }
+
+    private object SharedTrust {
+        @Volatile
+        var store: TrustStore? = null
+    }
 
     private fun createTrustStore(): TrustStore = object : TrustStore {
         private val map = ConcurrentHashMap<Fingerprint, PairedDevice>().apply {
