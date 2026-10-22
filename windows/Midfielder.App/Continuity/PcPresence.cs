@@ -79,7 +79,7 @@ internal sealed class PcPresence : IDisposable
         {
             var data = new byte[section.Data.Length];
             using (var reader = DataReader.FromBuffer(section.Data)) reader.ReadBytes(data);
-            if (!PresenceToken.TryParse(data, out var token) || !PresenceToken.Matches(_key, token, DateTimeOffset.UtcNow)) continue;
+            if (!PresenceToken.MatchesAny(_key, data, DateTimeOffset.UtcNow)) continue;
             int rssi = args.RawSignalStrengthInDBm;
             _ui.Post(_ =>
             {

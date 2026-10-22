@@ -26,22 +26,45 @@ class ClipboardBridge(context: Context) {
 
     val isSuppressed: Boolean get() = SystemClock.elapsedRealtime() < suppressUntil
 
-    fun read(): ClipContent? {
+    /** What was taken off the clipboard while we had focus: text is ready, an image is loaded later off the UI thread. */
+    sealed interface Grab {
+        class Ready(val content: ClipContent) : Grab
+        class Image(val uri: Uri, val mime: String, val sensitive: Boolean) : Grab
+    }
+
+
+    /**
+     * Grabs the clipboard (needs window focus). Cheap and quiet: unless [force], a clip already seen (same
+     * timestamp) isn't read again, so returning to the app doesn't re-send it or trigger Android's "pasted" toast.
+     */
+    fun grab(force: Boolean = false): Grab? {
+        val stamp = clipboard.primaryClipDescription?.timestamp ?: return null
+        if (!force && stamp == lastStamp) return null
         val clip = clipboard.primaryClip ?: return null
+        lastStamp = stamp // process-wide: every reader (activity, engine, UI) shares it
         if (clip.itemCount == 0) return null
         val sensitive = isSensitive(clip.description)
         val item = clip.getItemAt(0)
         val uri = item.uri
         if (uri != null) {
             if (uri.authority == ClipImageProvider.AUTHORITY) return null // our own write
-            val mime = app.contentResolver.getType(uri)
-            if (mime != null && mime.startsWith("image/")) return readImage(uri, mime, sensitive)
+            val mime = runCatching { app.contentResolver.getType(uri) }.getOrNull()
+            if (mime != null && mime.startsWith("image/")) return Grab.Image(uri, mime, sensitive)
         }
         // Only real text. coerceToText() would read a whole content URI into memory.
         val text = item.text?.toString()
         if (text.isNullOrEmpty()) return null
-        return ClipContent.Text(text, sensitive)
+        return Grab.Ready(ClipContent.Text(text, sensitive))
     }
+
+    /** Turns a grab into content; images are decoded here (call off the main thread for those). */
+    fun load(grab: Grab): ClipContent? = when (grab) {
+        is Grab.Ready -> grab.content
+        is Grab.Image -> readImage(grab.uri, grab.mime, grab.sensitive)
+    }
+
+    /** Grab and load in one go (text only callers, or already off the main thread). */
+    fun read(force: Boolean = true): ClipContent? = grab(force)?.let(::load)
 
     /** Puts [content] on the clipboard. For an image, returns the content URI it is served from. */
     fun write(content: ClipContent): Uri? {
@@ -105,8 +128,10 @@ class ClipboardBridge(context: Context) {
     }
 
     private companion object {
+        @Volatile
+        var lastStamp = -1L
         const val SUPPRESS_MS = 1_500L
-        const val MAX_SIDE = 4096
+        const val MAX_SIDE = 2048 // plenty for a pasted picture; a full-size photo would be ~20 MB as PNG
         const val MAX_PIXELS = 50_000_000L
         val EXTRA_IS_SENSITIVE: String =
             if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE"

@@ -38,7 +38,14 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
     private var phase = CallPhase.CALL_PHASE_ENDED
     private var number = ""
     private var startedAt = 0L
-    private var ringMuted = false
+    private val prefs = app.getSharedPreferences("calls", Context.MODE_PRIVATE)
+
+    /** Saved, so a crash mid-call can't leave the ringer muted for good. */
+    private var ringMuted: Boolean
+        get() = prefs.getBoolean(RING_MUTED, false)
+        set(v) {
+            prefs.edit().putBoolean(RING_MUTED, v).commit()
+        }
 
     @Volatile
     var current: CallState? = null
@@ -59,7 +66,18 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
         receiver = r
         // A protected system broadcast: only Android can send it.
         app.registerReceiver(r, IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED))
+        // A call already in progress when the feature is turned on (or the app restarted) still shows on the PC.
+        val telephony = app.getSystemService(TelephonyManager::class.java)
+        @Suppress("DEPRECATION")
+        val now = runCatching { telephony?.callState }.getOrNull()
+        when (now) {
+            TelephonyManager.CALL_STATE_RINGING -> worker.execute { onState(TelephonyManager.EXTRA_STATE_RINGING, "") }
+            TelephonyManager.CALL_STATE_OFFHOOK -> worker.execute { onState(TelephonyManager.EXTRA_STATE_OFFHOOK, "") }
+        }
     }
+
+    /** A previous run died while the ringer was muted by "Silence": unmute it. */
+    fun restoreAfterCrash() = worker.execute { restoreRinger() }
 
     fun stop() {
         receiver?.let { runCatching { app.unregisterReceiver(it) } }
@@ -92,10 +110,18 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
                 }
             }
             TelephonyManager.EXTRA_STATE_OFFHOOK -> {
-                if (phase == CallPhase.CALL_PHASE_ACTIVE) return
+                if (phase == CallPhase.CALL_PHASE_ACTIVE) {
+                    // The duplicate broadcast (with call-log access) is the one with the number.
+                    if (number.isNotEmpty() || incoming.isEmpty()) return
+                    number = incoming
+                    val s = build()
+                    current = s
+                    send(s)
+                    return
+                }
                 if (phase == CallPhase.CALL_PHASE_ENDED) {
                     callId++ // an outgoing call
-                    number = ""
+                    number = incoming
                 }
                 phase = CallPhase.CALL_PHASE_ACTIVE
                 startedAt = now
@@ -143,8 +169,7 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
                 CallAction.CALL_ACTION_DECLINE, CallAction.CALL_ACTION_END -> if (canAct) endCall(telecom)
                 CallAction.CALL_ACTION_SILENCE -> silence(telecom)
                 CallAction.CALL_ACTION_SMS_REPLY -> if (storage.callsSms && granted(app, Manifest.permission.SEND_SMS) && number.isNotEmpty()) {
-                    sms().sendTextMessage(number, null, cmd.text.ifEmpty { storage.callsSmsText }, null, null)
-                    EventLog.add("Sent the quick reply to the caller")
+                    sendSms(number, cmd.text.ifEmpty { storage.callsSmsText })
                     if (canAct) endCall(telecom)
                 }
                 else -> Unit
@@ -177,6 +202,27 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
         runCatching { app.getSystemService(AudioManager::class.java)?.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_UNMUTE, 0) }
     }
 
+    /**
+     * Long or emoji messages don't fit one SMS (160/70 characters): they're split, and the log says what really
+     * happened (the sent PendingIntent reports the carrier's answer).
+     */
+    private fun sendSms(to: String, text: String) {
+        val manager = sms()
+        val parts = manager.divideMessage(text)
+        val sent = android.app.PendingIntent.getBroadcast(
+            app, 0, Intent(ACTION_SMS_SENT).setPackage(app.packageName), android.app.PendingIntent.FLAG_IMMUTABLE,
+        )
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                runCatching { app.unregisterReceiver(this) }
+                EventLog.add(if (resultCode == android.app.Activity.RESULT_OK) "Sent the quick reply to the caller" else "The quick reply wasn't sent (error $resultCode)")
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) app.registerReceiver(receiver, IntentFilter(ACTION_SMS_SENT), Context.RECEIVER_NOT_EXPORTED)
+        else app.registerReceiver(receiver, IntentFilter(ACTION_SMS_SENT))
+        manager.sendMultipartTextMessage(to, null, parts, ArrayList(parts.map { sent }), null)
+    }
+
     private fun sms(): SmsManager =
         if (android.os.Build.VERSION.SDK_INT >= 31) app.getSystemService(SmsManager::class.java)
         else @Suppress("DEPRECATION") SmsManager.getDefault()
@@ -206,6 +252,8 @@ class CallBridge(context: Context, private val storage: AppStorage, private val 
     }.getOrNull()
 
     companion object {
+        private const val RING_MUTED = "ring_muted"
+        private const val ACTION_SMS_SENT = "dev.midfielder.SMS_SENT"
         private const val PHOTO_PX = 96
         private const val MAX_PHOTO_BYTES = 16 * 1024
 

@@ -106,7 +106,7 @@ class HomeTab(host: MainActivity) : Tab(host) {
         setupRow.addView(setupText, ui.weight(1f, 12))
         setupRow.addView(ui.icon(R.drawable.ic_chevron_right, ui.onTertiaryContainer, 22))
         setup.body.addView(setupRow)
-        setupCard.setOnClickListener { host.showTab(MainActivity.TAB_SETTINGS) }
+        setupCard.setOnClickListener { host.showSetup() }
         root.addView(setupCard, ui.matchWidth(12))
 
         // Quick actions: 2 x 2 tonal tiles.
@@ -122,18 +122,14 @@ class HomeTab(host: MainActivity) : Tab(host) {
         pcActions = ui.horizontal().apply { visibility = View.GONE }
         ringTile = compactTile(R.drawable.ic_ring, "Ring PC") {
             val sent = SyncEngine.current?.features?.ringPc() == true
-            android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
+            host.snack(if (sent) "Ringing your PC" else "Your PC can't ring right now")
         }.first
         val pcAudio = compactTile(R.drawable.ic_headphones, "PC audio here") { togglePcAudio() }
         pcAudioTile = pcAudio.first
         pcAudioTitle = pcAudio.second
         phoneAudioTile = compactTile(R.drawable.ic_music, "Play on PC") {
             val sent = SyncEngine.current?.features?.requestAudio(dev.midfielder.proto.AudioRoute.AUDIO_ROUTE_PHONE_TO_PC, start = true) == true
-            android.widget.Toast.makeText(
-                host,
-                if (sent) "Your PC is connecting to this phone over Bluetooth" else "Turn on Audio in Midfielder on your PC too",
-                android.widget.Toast.LENGTH_SHORT,
-            ).show()
+            host.snack(if (sent) "Your PC is connecting to this phone over Bluetooth" else "Turn on Audio in Midfielder on your PC too")
         }.first
         for (t in listOf(ringTile, pcAudioTile, phoneAudioTile)) pcActions.addView(t, ui.weight().apply { setMargins(ui.dp(3), 0, ui.dp(3), 0) })
         root.addView(pcActions, ui.matchWidth(6))
@@ -298,7 +294,7 @@ class HomeTab(host: MainActivity) : Tab(host) {
             return
         }
         val sent = features.requestAudio(dev.midfielder.proto.AudioRoute.AUDIO_ROUTE_PC_TO_PHONE, start = true)
-        if (!sent) android.widget.Toast.makeText(host, "Turn on Audio in Midfielder on your PC too", android.widget.Toast.LENGTH_SHORT).show()
+        if (!sent) host.snack("Turn on Audio in Midfielder on your PC too")
     }
 
     private fun renderTransfers(list: List<ActiveTransfer>) {

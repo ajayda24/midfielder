@@ -42,13 +42,18 @@ public static class PresenceToken
         return false;
     }
 
-    /// <summary>The beacon's manufacturer data after the company id: version, then the token.</summary>
-    public static bool TryParse(ReadOnlySpan<byte> manufacturerData, out ReadOnlySpan<byte> token)
+    /// <summary>
+    /// The beacon's manufacturer data after the company id: version, then one token per PC the phone is paired with
+    /// (up to two). True if one of them is this PC's token for now.
+    /// </summary>
+    public static bool MatchesAny(byte[] key, ReadOnlySpan<byte> manufacturerData, DateTimeOffset now)
     {
-        token = default;
-        if (manufacturerData.Length != 1 + TokenBytes || manufacturerData[0] != Version) return false;
-        token = manufacturerData[1..];
-        return true;
+        if (manufacturerData.Length < 1 + TokenBytes || manufacturerData[0] != Version || (manufacturerData.Length - 1) % TokenBytes != 0) return false;
+        for (int at = 1; at < manufacturerData.Length; at += TokenBytes)
+        {
+            if (Matches(key, manufacturerData.Slice(at, TokenBytes), now)) return true;
+        }
+        return false;
     }
 }
 

@@ -154,6 +154,20 @@ class Notifications(context: Context) {
             .build(),
     )
 
+    /** Something the user has to act on (Midfielder couldn't start, saved pairings unreadable); tapping opens the app. */
+    fun problem(title: String, text: String) = nm.notify(
+        PROBLEM_ID,
+        Notification.Builder(app, EVENTS)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setColor(ACCENT)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(PendingIntent.getActivity(app, 2, Intent(app, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+            .setAutoCancel(true)
+            .build(),
+    )
+
     /** "Playing on your PC" with Android's media controls (and the lock screen) driving the PC's player. */
     fun pcMedia(token: android.media.session.MediaSession.Token, state: dev.midfielder.proto.MediaState, art: android.graphics.Bitmap?) {
         fun action(icon: Int, label: String, cmd: dev.midfielder.proto.MediaAction): Notification.Action {
@@ -174,13 +188,22 @@ class Notifications(context: Context) {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .addAction(action(R.drawable.ic_skip_previous, "Previous", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PREVIOUS))
-            .addAction(
-                if (state.playing) action(R.drawable.ic_pause, "Pause", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PAUSE)
-                else action(R.drawable.ic_play, "Play", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PLAY),
-            )
-            .addAction(action(R.drawable.ic_skip_next, "Next", dev.midfielder.proto.MediaAction.MEDIA_ACTION_NEXT))
-            .setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(0, 1, 2))
+        // Only the buttons the PC's player supports (a podcast app may have no Next).
+        var count = 0
+        if (state.can_previous) {
+            builder.addAction(action(R.drawable.ic_skip_previous, "Previous", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PREVIOUS))
+            count++
+        }
+        builder.addAction(
+            if (state.playing) action(R.drawable.ic_pause, "Pause", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PAUSE)
+            else action(R.drawable.ic_play, "Play", dev.midfielder.proto.MediaAction.MEDIA_ACTION_PLAY),
+        )
+        count++
+        if (state.can_next) {
+            builder.addAction(action(R.drawable.ic_skip_next, "Next", dev.midfielder.proto.MediaAction.MEDIA_ACTION_NEXT))
+            count++
+        }
+        builder.setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(*(0 until count).toList().toIntArray()))
         nm.notify(PC_MEDIA_ID, builder.build())
     }
 
@@ -219,6 +242,7 @@ class Notifications(context: Context) {
         private const val PC_MEDIA = "pc_media"
         private const val PC_AUDIO = "pc_audio"
         private const val PC_AUDIO_ID = 5
+        private const val PROBLEM_ID = 6
         private const val RING_ID = 3
         private const val BATTERY_ID = 4
         private const val PC_MEDIA_ID = 100

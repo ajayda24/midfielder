@@ -18,16 +18,37 @@ class SyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         val notifications = Notifications(this)
-        startForeground(
-            Notifications.STATUS_ID, notifications.status("Starting…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
-        engine = SyncEngine(this).also {
-            SyncEngine.current = it
-            it.start()
+        try {
+            startForeground(
+                Notifications.STATUS_ID, notifications.status("Starting…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } catch (e: Exception) {
+            // Android 12+ refuses a foreground start from the background in some cases (ForegroundServiceStartNotAllowedException),
+            // and 14+ refuses it without the permission the type needs. Crashing would only loop; ask for a tap instead.
+            EventLog.error("Couldn't start in the foreground", e)
+            notifications.problem("Midfielder is paused", "Android didn't let it start in the background. Tap to reconnect.")
+            stopSelf()
+            return
         }
+        engine = try {
+            SyncEngine(this).also {
+                SyncEngine.current = it
+                it.start()
+            }
+        } catch (e: Exception) {
+            EventLog.error("Couldn't start", e)
+            notifications.problem("Midfielder couldn't start", "Open it to try again. If this keeps happening, reinstall Midfielder.")
+            stopSelf()
+            null
+        }
+        engine?.storage?.storageProblem?.let { notifications.problem("Pair with your PC again", it) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (engine == null) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_SEND_URIS) {
             // URIs arrive with a read grant attached to this intent, which lasts while the service runs.
             val uris = intent.clipData?.let { clip -> (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri } }.orEmpty()

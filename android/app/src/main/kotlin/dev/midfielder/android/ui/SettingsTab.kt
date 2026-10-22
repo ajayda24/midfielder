@@ -35,7 +35,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             SyncEngine.current?.clipSync?.enabled = on
         }.indent())
         sync.body.addView(ui.divider())
-        sync.body.addView(ui.switchRow("Receive files automatically", "Saved to Download/Midfielder", storage.acceptFiles) {
+        sync.body.addView(ui.switchRow("Accept files from your PC", "Saved to Download/Midfielder. Off: files from the PC are refused", storage.acceptFiles) {
             storage.acceptFiles = it
         }.indent())
         root.addView(sync.card, ui.matchWidth(4))
@@ -48,7 +48,8 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         root.addView(featuresBox, ui.matchWidth(0))
         buildFeatures()
 
-        root.addView(ui.sectionHeader("Automatic copy setup"))
+        setupHeader = ui.sectionHeader("Automatic copy setup")
+        root.addView(setupHeader)
         val setup = ui.card(paddingDp = 8)
         checklist = setup.body
         root.addView(setup.card, ui.matchWidth(4))
@@ -73,6 +74,16 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         )
         root.addView(store.card, ui.matchWidth(4))
 
+        root.addView(ui.sectionHeader("Advanced"))
+        val advanced = ui.card(paddingDp = 8)
+        advanced.body.addView(
+            ui.listRow("Developer", "Connection details, the event log and debugging tools", ui.iconBadge(R.drawable.ic_code, 40),
+                ui.icon(R.drawable.ic_chevron_right, ui.onSurfaceVariant)) {
+                host.showTab(MainActivity.TAB_DEVELOPER)
+            }.indent(),
+        )
+        root.addView(advanced.card, ui.matchWidth(4))
+
         val tip = ui.card(Ui.Card.FILLED, fill = ui.secondaryContainer)
         tip.card.cardElevation = 0f
         tip.body.addView(ui.text("Tip", com.google.android.material.R.style.TextAppearance_Material3_LabelLarge, ui.onSecondaryContainer))
@@ -81,7 +92,17 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             com.google.android.material.R.style.TextAppearance_Material3_BodyMedium, ui.onSecondaryContainer,
         ).apply { setPadding(0, ui.dp(4), 0, 0) })
         root.addView(tip.card, ui.matchWidth(20))
-        return ScrollView(host).apply { addView(root) }
+        scroll = ScrollView(host).apply { addView(root) }
+        return scroll
+    }
+
+    private lateinit var scroll: ScrollView
+    private lateinit var setupHeader: View
+
+    /** Home's "Finish setup" banner lands here: show the checklist, not the top of Settings. */
+    fun scrollToSetup() {
+        if (!::scroll.isInitialized) return
+        scroll.post { scroll.smoothScrollTo(0, (setupHeader.top - ui.dp(8)).coerceAtLeast(0)) }
     }
 
     private fun LinearLayout.indent(): LinearLayout = apply { setPadding(ui.dp(12), paddingTop, ui.dp(12), paddingBottom) }
@@ -91,6 +112,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         scope.launch { engine().status.collect { renderPc(it) } }
         // Feature cards say whether the PC has each feature on too: text updates in place, nothing is rebuilt.
         scope.launch { engine().features.pc.collect { refresh(animate = false) } }
+        scope.launch { engine().features.beacon.problem.collect { refresh(animate = false) } }
     }
 
     /**
@@ -204,7 +226,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             Features.RING, { storage.featRing }) { storage.featRing = it }
         val ringPc = ui.listRow("Ring my PC", "Plays a loud sound on your PC so you can find it", trailing = ui.button("Ring", Ui.Button.TONAL, R.drawable.ic_ring) {
             val sent = SyncEngine.current?.features?.ringPc() == true
-            android.widget.Toast.makeText(host, if (sent) "Ringing your PC" else "Your PC can't ring right now", android.widget.Toast.LENGTH_SHORT).show()
+            host.snack(if (sent) "Ringing your PC" else "Your PC can't ring right now")
         })
         conditional(ring, ringPc) { SyncEngine.current?.features?.pc?.value?.canRing == true }
         val ringHint = ui.supporting("Turn on Find my phone in Midfielder on your PC too, and it can be rung from here").apply {
@@ -258,7 +280,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         conditional(lock, beaconState) { dev.midfielder.android.PresenceBeacon.canAdvertise(host) }
         dynamic += {
             val f = SyncEngine.current?.features
-            val problem = f?.beacon?.problem
+            val problem = f?.beacon?.problem?.value
             beaconState.text = when {
                 f == null || !f.pc.value.presenceReady -> "Waiting for your PC: turn on the same feature in Midfielder on the PC"
                 problem != null -> problem
@@ -285,8 +307,10 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         val pc = SyncEngine.current?.features?.pc?.value
         for (c in cards) {
             val on = c.isOn()
+            val needs = needs(c.capability)
             val (text, color) = when {
                 !on -> "Off" to ui.onSurfaceVariant
+                needs != null -> needs to ui.errorColor
                 pc == null || pc.name == null -> "On · works when your PC is connected" to ui.onSurfaceVariant
                 c.capability !in pc.capabilities -> "Turn it on in Midfielder on your PC too" to ui.errorColor
                 else -> "On · working with ${pc.name}" to ui.primary
@@ -295,6 +319,15 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             c.status.setTextColor(color)
             c.showOptions()
         }
+    }
+
+    /** What a switched-on feature still needs from Android before it can work, if anything. */
+    private fun needs(capability: String): String? = when (capability) {
+        Features.NOTIFY -> "Needs notification access".takeIf { !PhoneNotificationListener.isGranted(host) }
+        Features.MEDIA -> "Phone music needs notification access".takeIf { storage.mediaPhoneToPc && !PhoneNotificationListener.isGranted(host) }
+        Features.CALL -> "Needs permission".takeIf { dev.midfielder.android.CallBridge.missing(host, storage).isNotEmpty() }
+        Features.PRESENCE -> "Needs Nearby devices".takeIf { !dev.midfielder.android.PresenceBeacon.canAdvertise(host) }
+        else -> null
     }
 
     /** A feature switch was flipped: apply it, ask for what it needs now (only when turned on), update in place. */
@@ -317,12 +350,11 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         refresh()
     }
 
-    /** Asks for the [permissions] still missing; nothing if all are granted. */
+    /** Asks for the [permissions] still missing (only right after a switch was turned on); nothing if all are granted. */
     private fun ask(permissions: List<String>) {
         val missing = permissions.filterNot { dev.midfielder.android.CallBridge.granted(host, it) }
-        if (missing.isEmpty()) return
-        storage.prefs.edit().putBoolean("asked_permissions", true).apply()
-        host.requestPermissions(missing.toTypedArray(), dev.midfielder.android.MainActivity.REQ_FEATURES)
+            .filterNot { dev.midfielder.android.Permissions.blocked(host, it) } // the card's Grant row handles those
+        if (missing.isNotEmpty()) dev.midfielder.android.Permissions.request(host, missing.toTypedArray(), MainActivity.REQ_FEATURES)
     }
 
     /**
@@ -330,18 +362,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
      * Midfielder's page in Android settings where the permission can be turned on.
      */
     private fun grant() {
-        val missing = runtimePermissionsMissing()
-        if (missing.isEmpty()) return
-        val blocked = storage.prefs.getBoolean("asked_permissions", false) && missing.none { host.shouldShowRequestPermissionRationale(it) }
-        if (blocked) {
-            runCatching {
-                host.startActivity(
-                    android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", host.packageName, null)),
-                )
-            }
-        } else {
-            ask(missing)
-        }
+        dev.midfielder.android.Permissions.requestOrOpenSettings(host, runtimePermissionsMissing(), MainActivity.REQ_FEATURES)
     }
 
     /** Runtime permissions the switched-on features still need. */
@@ -357,28 +378,62 @@ class SettingsTab(host: MainActivity) : Tab(host) {
     }
 
     private fun editSmsText() {
-        val input = android.widget.EditText(host).apply {
-            setText(storage.callsSmsText)
-            setSelection(text.length)
+        val layout = com.google.android.material.textfield.TextInputLayout(host).apply {
+            hint = "Message"
+            isCounterEnabled = true
+            counterMaxLength = SMS_CHARS
+            helperText = "Sent to the caller when you choose Text back on the PC"
         }
+        val input = com.google.android.material.textfield.TextInputEditText(layout.context).apply {
+            setText(storage.callsSmsText)
+            setSelection(text?.length ?: 0)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            maxLines = 4
+        }
+        layout.addView(input)
         val box = android.widget.FrameLayout(host).apply {
             setPadding(ui.dp(24), ui.dp(8), ui.dp(24), 0)
-            addView(input)
+            addView(layout)
         }
-        com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+        val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
             .setTitle("Quick text reply")
             .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                val t = input.text.toString().trim()
-                if (t.isNotEmpty()) storage.callsSmsText = t
-                SyncEngine.current?.features?.apply()
-                refresh()
-            }
+            .setPositiveButton("Save", null)
             .setNegativeButton("Cancel", null)
+            .show()
+        // Validate before closing: an empty message isn't saved silently.
+        dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+            val t = input.text?.toString()?.trim().orEmpty()
+            if (t.isEmpty()) {
+                layout.error = "Write a short message"
+                return@setOnClickListener
+            }
+            storage.callsSmsText = t
+            SyncEngine.current?.features?.apply()
+            refresh()
+            dialog.dismiss()
+        }
+    }
+
+    /**
+     * Explains first, then opens Android's notification-access page for Midfielder. The listener component is
+     * enabled before, or the page can't find Midfielder. On Android 13+ a sideloaded app's toggle is greyed out
+     * until "Allow restricted settings" is chosen in App info, so that's said too.
+     */
+    private fun openNotificationAccess() {
+        PhoneNotificationListener.setEnabled(host, true)
+        val restricted = dev.midfielder.android.Permissions.restrictedSettingsHint?.let { "\n\n$it" }.orEmpty()
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(host)
+            .setTitle("Allow notification access")
+            .setMessage("Midfielder needs it to show this phone's notifications and music on your PC. Nothing leaves your own network.$restricted")
+            .setPositiveButton("Open settings") { _, _ -> openNotificationAccessPage() }
+            .setNeutralButton("App info") { _, _ -> dev.midfielder.android.Permissions.openAppSettings(host) }
+            .setNegativeButton("Not now", null)
             .show()
     }
 
-    private fun openNotificationAccess() {
+    private fun openNotificationAccessPage() {
         val intent = if (android.os.Build.VERSION.SDK_INT >= 30) {
             android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
                 .putExtra(
@@ -388,8 +443,7 @@ class SettingsTab(host: MainActivity) : Tab(host) {
         } else {
             android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
         }
-        runCatching { host.startActivity(intent) }
-            .onFailure { runCatching { host.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }
+        dev.midfielder.android.Permissions.openSafely(host, intent, fallback = android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
     }
 
     fun renderChecklist() {
@@ -401,15 +455,19 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             val badge = if (step.done) ui.iconBadge(R.drawable.ic_check, 40, ui.primaryContainer, ui.onPrimaryContainer)
             else ui.iconBadge(R.drawable.ic_warning, 40, ui.errorContainer, ui.onErrorContainer)
             val action = if (step.done) null else ui.button(step.action, Ui.Button.TONAL) {
-                step.run(host)
-                checklist.postDelayed({ renderChecklist() }, 3_000)
+                runCatching { step.run(host) }.onFailure { host.snack("Couldn't open that setting on this phone") }
             }
             // The action goes under the text so narrow phones keep a readable text column.
             checklist.addView(ui.listRow(step.label, step.detail, badge, below = action).indent())
         }
     }
 
+    private var renderedPc: Pair<List<String>, List<String>>? = null
+
     private fun renderPc(s: SyncEngine.Status) {
+        val key = s.paired to s.connected
+        if (key == renderedPc) return // status changes after every event: rebuild only when the PCs changed
+        renderedPc = key
         pcSection.removeAllViews()
         if (s.paired.isEmpty()) {
             pcSection.addView(ui.listRow("No PC paired", "Open Midfielder on your PC and choose Pair a phone", ui.iconBadge(R.drawable.ic_laptop, 40)))
@@ -421,17 +479,32 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             pcSection.addView(ui.listRow(name, if (online) "Connected" else "Not connected right now",
                 ui.iconBadge(R.drawable.ic_laptop, 40, if (online) ui.primary else ui.secondaryContainer, if (online) ui.onPrimary else ui.onSecondaryContainer)))
         }
-        val buttons = ui.horizontal()
-        buttons.addView(ui.button("Pair again", Ui.Button.OUTLINED, R.drawable.ic_qr) { host.startScan() }, ui.weight())
-        buttons.addView(
-            ui.button("Forget", Ui.Button.OUTLINED, R.drawable.ic_delete) {
-                host.confirm("Forget paired PC?", "You will need to scan a new code to connect again.", "Forget") { SyncEngine.current?.unpairAll() }
-            }.apply {
-                setTextColor(ui.errorColor)
-                iconTint = android.content.res.ColorStateList.valueOf(ui.errorColor)
-            },
-            ui.weight(1f, 12),
-        )
-        pcSection.addView(buttons, ui.matchWidth(8))
+        val many = s.paired.size > 1
+        val pairAgain = ui.button("Pair again", Ui.Button.OUTLINED, R.drawable.ic_qr) { host.startScan() }
+        val forget = ui.button(if (many) "Forget all" else "Forget", Ui.Button.OUTLINED, R.drawable.ic_delete) {
+            host.confirm(
+                if (many) "Forget all ${s.paired.size} paired PCs?" else "Forget ${s.paired.first()}?",
+                "You will need to scan a new code to connect again.", "Forget",
+            ) { SyncEngine.current?.unpairAll() }
+        }.apply {
+            setTextColor(ui.errorColor)
+            iconTint = android.content.res.ColorStateList.valueOf(ui.errorColor)
+        }
+        // Side by side when there's room; stacked on narrow phones or with large text.
+        val narrow = host.resources.configuration.screenWidthDp < 360 || host.resources.configuration.fontScale > 1.3f
+        if (narrow) {
+            pcSection.addView(pairAgain, ui.matchWidth(8))
+            pcSection.addView(forget, ui.matchWidth(8))
+        } else {
+            val buttons = ui.horizontal()
+            buttons.addView(pairAgain, ui.weight())
+            buttons.addView(forget, ui.weight(1f, 12))
+            pcSection.addView(buttons, ui.matchWidth(8))
+        }
+    }
+
+    private companion object {
+        /** One SMS; longer replies are split into parts, which costs more on some plans. */
+        const val SMS_CHARS = 160
     }
 }

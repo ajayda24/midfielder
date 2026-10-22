@@ -31,7 +31,11 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
     private var controller: MediaController? = null
     private var started = false
     private var artKey: Any? = null
-    private var artSent = false
+    private var artJpeg: ByteArray? = null
+    private var forceArt = true
+    private var last: MediaState? = null
+    private var lastAt = 0L
+    private val labels = HashMap<String, String>()
 
     private val onSessions = MediaSessionManager.OnActiveSessionsChangedListener { list -> pick(list.orEmpty()) }
     private val push = Runnable { sendNow() }
@@ -68,7 +72,8 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
     /** A PC (re)connected or switched music on: send the full state, art included. */
     fun resend() {
         main.post {
-            artKey = null
+            forceArt = true
+            last = null
             if (started) sendNow()
         }
     }
@@ -99,7 +104,7 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
             controller?.unregisterCallback(callback)
             controller = best
             best?.registerCallback(callback, main)
-            artKey = null
+            forceArt = true
         }
         schedule()
     }
@@ -114,7 +119,8 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
         val meta = c?.metadata
         val state = c?.playbackState
         if (c == null || meta == null) {
-            send(MediaState(active = false))
+            if (last?.active != false) send(MediaState(active = false))
+            last = MediaState(active = false)
             return
         }
         val playing = state?.state == PlaybackState.STATE_PLAYING
@@ -122,21 +128,29 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
             val elapsed = if (playing) SystemClock.elapsedRealtime() - it.lastPositionUpdateTime else 0
             (it.position + (elapsed * it.playbackSpeed).toLong()).coerceAtLeast(0)
         } ?: 0
+        // Each metadata read unparcels a new Bitmap (new generationId), so the track identifies the art; the JPEG is
+        // made once per track, not on every play/pause/seek.
         val art = meta.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: meta.getBitmap(MediaMetadata.METADATA_KEY_ART)
-        val key = listOf(meta.getString(MediaMetadata.METADATA_KEY_TITLE), art?.generationId, art?.width)
-        val sameArt = key == artKey
-        artKey = key
+        val key = listOf(
+            meta.getString(MediaMetadata.METADATA_KEY_TITLE), meta.getString(MediaMetadata.METADATA_KEY_ARTIST),
+            meta.getString(MediaMetadata.METADATA_KEY_ALBUM), art?.width, art?.height,
+        )
+        val newArt = key != artKey
+        if (newArt) {
+            artKey = key
+            artJpeg = art?.let(::jpeg)
+        }
+        val sendArt = newArt || forceArt
         val actions = state?.actions ?: 0
-        send(
-            MediaState(
+        val next = MediaState(
                 active = true,
                 app_name = appName(c.packageName),
                 title = meta.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty().take(MAX_TEXT),
                 artist = (meta.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: meta.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))
                     .orEmpty().take(MAX_TEXT),
                 album = meta.getString(MediaMetadata.METADATA_KEY_ALBUM).orEmpty().take(MAX_TEXT),
-                art_jpeg = if (sameArt || art == null) okio.ByteString.EMPTY else jpeg(art)?.toByteString() ?: okio.ByteString.EMPTY,
-                art_unchanged = sameArt,
+                art_jpeg = if (sendArt) artJpeg?.toByteString() ?: okio.ByteString.EMPTY else okio.ByteString.EMPTY,
+                art_unchanged = !sendArt,
                 playing = playing,
                 position_ms = position,
                 duration_ms = meta.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0),
@@ -144,14 +158,29 @@ class PhoneMedia(context: Context, private val send: (MediaState) -> Unit) {
                 can_next = actions and PlaybackState.ACTION_SKIP_TO_NEXT != 0L,
                 can_previous = actions and PlaybackState.ACTION_SKIP_TO_PREVIOUS != 0L,
                 can_seek = actions and PlaybackState.ACTION_SEEK_TO != 0L,
-            ),
-        )
+            )
+        if (!sendArt && sameAsLast(next)) return // nothing the PC would show differently
+        forceArt = false
+        last = next
+        lastAt = SystemClock.elapsedRealtime()
+        send(next)
     }
 
-    private fun appName(pkg: String): String = runCatching {
-        val pm = app.packageManager
-        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-    }.getOrDefault(pkg)
+    /** Same track, state and buttons, and the position is where the PC already expects it (within a second). */
+    private fun sameAsLast(next: MediaState): Boolean {
+        val prev = last ?: return false
+        val expected = prev.position_ms + if (prev.playing) SystemClock.elapsedRealtime() - lastAt else 0
+        return prev.copy(position_ms = 0, updated_at_ms = 0, art_jpeg = okio.ByteString.EMPTY, art_unchanged = true) ==
+            next.copy(position_ms = 0, updated_at_ms = 0, art_jpeg = okio.ByteString.EMPTY, art_unchanged = true) &&
+            kotlin.math.abs(next.position_ms - expected) < 1_000
+    }
+
+    private fun appName(pkg: String): String = labels.getOrPut(pkg) {
+        runCatching {
+            val pm = app.packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault(pkg)
+    }
 
     private companion object {
         const val DEBOUNCE_MS = 250L
@@ -231,7 +260,8 @@ class PcMedia(context: Context, private val notifications: Notifications, privat
 class PcMediaReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = MediaAction.fromValue(intent.getIntExtra(EXTRA_ACTION, 0)) ?: return
-        SyncEngine.current?.features?.sendMediaCommand(MediaCommand(action = action))
+        val features = SyncEngine.current?.features
+        if (features != null) features.sendMediaCommand(MediaCommand(action = action)) else Notifications(context).cancelPcMedia()
     }
 
     companion object {
@@ -242,7 +272,8 @@ class PcMediaReceiver : BroadcastReceiver() {
 /** Ring notification's Stop button. */
 class RingStopReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        SyncEngine.current?.features?.ringer?.stop()
+        val ringer = SyncEngine.current?.features?.ringer
+        if (ringer != null) ringer.stop() else Notifications(context).cancelRinging()
     }
 }
 

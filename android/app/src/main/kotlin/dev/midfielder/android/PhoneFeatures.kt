@@ -20,12 +20,17 @@ import dev.midfielder.proto.NotificationRemoved
 import dev.midfielder.proto.RingRequest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The optional features on the phone: notifications and music on the PC, battery sharing, find my phone, audio
  * between the devices, calls, the auto-lock beacon. Every one
  * has its own switch in [AppStorage]; [apply] starts what is on and stops what is off (receivers unregistered,
  * listener component disabled, nothing sent), and tells the PC which features are on.
+ *
+ * Threads: [apply] and [close] run on the main thread; messages arrive on the node's reader threads, so shared
+ * state is either confined, concurrent, or updated atomically ([_pc] via `update`).
  */
 class PhoneFeatures(
     context: Context,
@@ -54,19 +59,35 @@ class PhoneFeatures(
     val ringer = Ringer(app, notifs)
     val notifications = PhoneNotifications(app, storage) { posted, removedKey ->
         val env = if (posted != null) Envelope(notification_posted = posted) else Envelope(notification_removed = NotificationRemoved(key = removedKey!!))
-        node.sendFeature(Features.NOTIFY, env)
+        node.sendFeature(Features.NOTIFY, env) > 0
     }
     private val phoneMedia = PhoneMedia(app) { node.sendFeature(Features.MEDIA, Envelope(media_state = it)) }
     private val pcMedia = PcMedia(app, notifs) { sendMediaCommand(it) }
-    private val pcAudio = PcAudioPlayer(app, node, notifs) { playing -> _pc.value = _pc.value.copy(audioHere = playing) }
+    private val pcAudio = PcAudioPlayer(
+        app, node, notifs,
+        onPlaying = { playing -> _pc.update { it.copy(audioHere = playing) } },
+        tellPc = { id, reason -> node.sendFeature(Features.AUDIO, Envelope(audio_stop = AudioStop(stream_id = id, reason = reason))) },
+    )
     val calls = CallBridge(app, storage) { node.sendFeature(Features.CALL, Envelope(call_state = it)) }
     val beacon = PresenceBeacon(app)
-    private val alerts = BatteryAlerts()
+    /** Each PC's battery and its own alert state (two PCs never mix their alerts). */
+    private val pcBatteries = ConcurrentHashMap<String, BatteryStatus>()
+    private val pcAlerts = ConcurrentHashMap<String, BatteryAlerts>()
     private var batteryReceiver: BroadcastReceiver? = null
 
     @Volatile
     private var lastBattery: BatteryStatus? = null
     private var phoneMediaOn = false
+    private var callOptions: List<Boolean>? = null
+
+    init {
+        // A previous run that ended abruptly may have left these up with buttons that no longer do anything.
+        notifs.cancelPcAudio()
+        notifs.cancelPcMedia()
+        notifs.cancelRinging()
+        ringer.restoreAfterCrash()
+        calls.restoreAfterCrash()
+    }
 
     /** Applies the switches. Call at start and whenever one changes. */
     fun apply() {
@@ -86,15 +107,32 @@ class PhoneFeatures(
         if (!(storage.featAudio && storage.audioPcToPhone)) stopPcAudio()
         if (storage.featCalls) {
             calls.start()
-            calls.resend() // options (answer, SMS) may have changed
+            val options = listOf(storage.callsActions, storage.callsContacts, storage.callsSms)
+            if (options != callOptions && callOptions != null) calls.resend() // what the PC may offer changed
+            callOptions = options
         } else {
             calls.stop()
+            callOptions = null
         }
-        val key = storage.presenceKey
-        if (storage.featPresence && key != null) beacon.start(key) else beacon.stop()
-        alerts.fullAt = storage.batteryFullAt
+        applyBeacon()
+        for (a in pcAlerts.values) a.fullAt = storage.batteryFullAt
         node.setFeatures(enabled())
         refreshPc()
+    }
+
+    /** The beacon carries a token for each paired PC that sent its key (and nothing once all are forgotten). */
+    private fun applyBeacon() {
+        val paired = storage.trustStore.all().map { it.fingerprint.hex }.toSet()
+        val keys = storage.presenceKeys.filterKeys { it in paired }.values.toList()
+        if (storage.featPresence && keys.isNotEmpty()) beacon.start(keys) else beacon.stop()
+    }
+
+    /** All PCs were forgotten: drop their auto-lock keys so the beacon stops. */
+    fun onUnpaired() {
+        storage.clearPresenceKeys()
+        pcBatteries.clear()
+        pcAlerts.clear()
+        apply()
     }
 
     fun enabled(): Set<String> = buildSet {
@@ -113,9 +151,18 @@ class PhoneFeatures(
 
     private fun phoneMusicOn() = storage.featMedia && storage.mediaPhoneToPc
 
-    /** Notification access was granted or revoked (the listener connected or disconnected). */
+    /**
+     * Notification access was granted or revoked (the listener connected or disconnected). The media sessions
+     * listener dies with the access, so it's registered again from scratch when access comes back.
+     */
     fun onListenerChanged() {
-        if (phoneMusicOn()) phoneMedia.start()
+        if (!phoneMusicOn()) return
+        phoneMedia.stop()
+        if (PhoneNotificationListener.isGranted(app)) {
+            phoneMedia.start()
+        } else {
+            node.sendFeature(Features.MEDIA, Envelope(media_state = MediaState(active = false)))
+        }
     }
 
     fun onPeerConnected(session: PeerSession) {
@@ -123,6 +170,7 @@ class PhoneFeatures(
         if (session.has(Features.BATTERY)) lastBattery?.let { session.trySend(Envelope(battery_status = it)) }
         if (session.has(Features.MEDIA)) phoneMedia.resend()
         if (session.has(Features.CALL)) calls.resend()
+        if (session.has(Features.NOTIFY) && storage.featNotify) notifications.resendActive()
     }
 
     fun onPeerDisconnected() {
@@ -148,10 +196,12 @@ class PhoneFeatures(
             env.features_changed != null -> {
                 refreshPc()
                 if (from.has(Features.BATTERY)) lastBattery?.let { from.trySend(Envelope(battery_status = it)) }
-                if (from.has(Features.MEDIA)) phoneMedia.resend() else pcMedia.clear()
+                if (from.has(Features.MEDIA)) phoneMedia.resend() else if (node.connectedPeers.value.size <= 1) pcMedia.clear()
+                if (from.has(Features.CALL)) calls.resend()
+                if (from.has(Features.NOTIFY) && storage.featNotify) notifications.resendActive()
             }
             action != null -> if (storage.featNotify) notifications.act(action)
-            battery != null -> if (storage.featBattery) onPcBattery(battery)
+            battery != null -> if (storage.featBattery) onPcBattery(from, battery)
             ring != null -> if (storage.featRing) {
                 if (ring.start) ringer.start() else ringer.stop()
             }
@@ -164,7 +214,7 @@ class PhoneFeatures(
             }
             audioStop != null -> pcAudio.stop(audioStop.stream_id)
             callCommand != null -> if (storage.featCalls) calls.command(callCommand)
-            presenceKey != null -> if (storage.featPresence) onPresenceKey(presenceKey.key.toByteArray())
+            presenceKey != null -> if (storage.featPresence) onPresenceKey(from, presenceKey.key.toByteArray())
         }
     }
 
@@ -180,18 +230,19 @@ class PhoneFeatures(
 
     /** Stops the PC's sound here and tells the PC, so it stops capturing. */
     fun stopPcAudio() {
-        val id = pcAudio.streamId ?: return
+        val id = pcAudio.streamId ?: return notifs.cancelPcAudio()
         node.sendFeature(Features.AUDIO, Envelope(audio_stop = AudioStop(stream_id = id, reason = "stopped on the phone")))
         pcAudio.stop(id)
     }
 
-    private fun onPresenceKey(key: ByteArray) {
+    private fun onPresenceKey(from: PeerSession, key: ByteArray) {
         if (key.size != 32) return
-        if (!key.contentEquals(storage.presenceKey)) {
-            storage.presenceKey = key
-            EventLog.add("Auto-lock: got the key from your PC")
+        val fp = from.peer.fingerprint.hex
+        if (!key.contentEquals(storage.presenceKeys[fp])) {
+            storage.setPresenceKey(fp, key)
+            EventLog.add("Auto-lock: got the key from ${from.peer.name}")
         }
-        beacon.start(key)
+        applyBeacon() // a no-op when the beacon already carries it
         refreshPc()
     }
 
@@ -209,11 +260,15 @@ class PhoneFeatures(
         beacon.stop()
     }
 
-    private fun onPcBattery(b: BatteryStatus) {
-        _pc.value = _pc.value.copy(battery = b)
+    private fun onPcBattery(from: PeerSession, b: BatteryStatus) {
+        val fp = from.peer.fingerprint.hex
+        pcBatteries[fp] = b
+        refreshPc()
         if (!storage.batteryAlerts) return
-        val pc = _pc.value.name ?: "Your PC"
-        when (alerts.update(b.level, b.charging)) {
+        val pc = from.peer.name
+        val alerts = pcAlerts.getOrPut(fp) { BatteryAlerts(fullAt = storage.batteryFullAt) }
+        val alert = synchronized(alerts) { alerts.update(b.level, b.charging) }
+        when (alert) {
             BatteryAlerts.Alert.FULL -> notifs.batteryAlert("$pc is charged to ${b.level}%", "Unplug it to keep the battery healthy")
             BatteryAlerts.Alert.LOW -> notifs.batteryAlert("$pc battery is low: ${b.level}%", "Plug it in soon")
             null -> Unit
@@ -223,8 +278,9 @@ class PhoneFeatures(
     private fun refreshPc() {
         val peer = node.connectedPeers.value.firstOrNull()
         val caps = peer?.let { node.session(it.fingerprint)?.capabilities }.orEmpty()
-        val battery = if (peer != null && Features.BATTERY in caps && storage.featBattery) _pc.value.battery else null
-        _pc.value = Pc(peer?.name, battery, caps, audioHere = pcAudio.isPlaying, presenceReady = storage.presenceKey != null)
+        val battery = if (peer != null && Features.BATTERY in caps && storage.featBattery) pcBatteries[peer.fingerprint.hex] else null
+        val ready = peer != null && storage.presenceKeys.containsKey(peer.fingerprint.hex) // in-memory after the first read
+        _pc.update { Pc(peer?.name, battery, caps, audioHere = pcAudio.isPlaying, presenceReady = ready) }
     }
 
     // ---- Battery -------------------------------------------------------------------------------------
@@ -249,7 +305,8 @@ class PhoneFeatures(
         batteryReceiver?.let { runCatching { app.unregisterReceiver(it) } }
         batteryReceiver = null
         lastBattery = null
-        _pc.value = _pc.value.copy(battery = null)
+        pcBatteries.clear()
+        _pc.update { it.copy(battery = null) }
     }
 
     private fun onBatteryIntent(intent: Intent) {

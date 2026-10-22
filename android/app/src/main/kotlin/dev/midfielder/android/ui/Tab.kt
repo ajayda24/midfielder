@@ -19,6 +19,26 @@ abstract class Tab(protected val host: MainActivity) {
 
     open fun stop() {}
 
+    /** The activity is going away for good (tabs are kept while it lives). */
+    open fun destroy() {}
+
+    /** The current tab was tapped again in the bottom bar: back to the top. */
+    open fun scrollToTop() {
+        fun find(v: View): View? = when (v) {
+            is android.widget.ScrollView, is androidx.recyclerview.widget.RecyclerView -> v
+            is android.view.ViewGroup -> (0 until v.childCount).firstNotNullOfOrNull { find(v.getChildAt(it)) }
+            else -> null
+        }
+        val root = view ?: return
+        when (val s = find(root)) {
+            is android.widget.ScrollView -> s.smoothScrollTo(0, 0)
+            is androidx.recyclerview.widget.RecyclerView -> s.smoothScrollToPosition(0)
+        }
+    }
+
+    /** The view [build] returned (set by the activity). */
+    var view: View? = null
+
     /** Back press: return true if the tab handled it (e.g. leaving selection mode). */
     open fun onBack(): Boolean = false
 

@@ -22,8 +22,17 @@ public object PresenceToken {
     public fun compute(key: ByteArray, slot: Long): ByteArray =
         Hashes.hmacSha256(key, LABEL, ByteBuffer.allocate(8).putLong(slot).array()).copyOf(TOKEN_BYTES)
 
-    /** The beacon's manufacturer data after the company id: version, then the token. */
-    public fun manufacturerData(key: ByteArray, slot: Long): ByteArray = byteArrayOf(VERSION) + compute(key, slot)
+    /** Tokens that fit one legacy advertisement next to the version byte (one per paired PC). */
+    public const val MAX_TOKENS: Int = 2
+
+    /** The beacon's manufacturer data after the company id: version, then one token per key (each PC finds its own). */
+    public fun manufacturerData(key: ByteArray, slot: Long): ByteArray = manufacturerData(listOf(key), slot)
+
+    public fun manufacturerData(keys: List<ByteArray>, slot: Long): ByteArray {
+        var out = byteArrayOf(VERSION)
+        for (k in keys.take(MAX_TOKENS)) out += compute(k, slot)
+        return out
+    }
 
     /** Milliseconds until the next slot starts (when the beacon must change). */
     public fun msToNextSlot(unixMs: Long): Long = (slot(unixMs) + 1) * SLOT_SECONDS * 1000 - unixMs

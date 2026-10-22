@@ -91,13 +91,14 @@ class SyncEngine(context: Context) : Closeable {
             clipSync.catchUpItem()?.let { session.trySend(Envelope(clipboard = it)) }
             flushWaitingSends()
             features.onPeerConnected(session)
+            connections.onConnected(session.peer)
             refreshStatus("Connected to ${session.peer.name}")
         }
 
         override fun onPeerDisconnected(device: PairedDevice, cause: Throwable?) {
             features.onPeerDisconnected()
             refreshStatus("Disconnected from ${device.name}")
-            connections.kick("disconnected")
+            connections.onDisconnected(device)
         }
 
         override fun onFeature(from: PeerSession, env: Envelope) = features.onMessage(from, env)
@@ -234,9 +235,19 @@ class SyncEngine(context: Context) : Closeable {
         return session.peer
     }
 
+    /** Pairs in the engine's scope (survives the screen going away); [onResult] runs on the main thread. */
+    fun pairInBackground(invite: PairingInvite, onResult: (Result<PairedDevice>) -> Unit) {
+        scope.launch {
+            val result = runCatching { pair(invite) }
+            if (result.isFailure) EventLog.error("Pairing with ${invite.name} failed", result.exceptionOrNull()!!)
+            main.post { onResult(result) }
+        }
+    }
+
     fun unpairAll() {
         for (d in storage.trustStore.all()) node.unpair(d.fingerprint)
         ShareShortcuts.update(app, storage.trustStore.all())
+        features.onUnpaired() // their auto-lock keys go too, so the beacon stops
         refreshStatus("Forgot paired PCs")
     }
 
@@ -253,7 +264,7 @@ class SyncEngine(context: Context) : Closeable {
     fun requestClipboardRead() {
         if (!clipSync.enabled || clipboard.isSuppressed || storage.trustStore.all().isEmpty()) return
         if (uiInForeground) {
-            clipboard.read()?.let(::onLocalClipboard)
+            main.post { runCatching { clipboard.grab() }.getOrNull()?.let { onClipboardGrab(it, force = false) } }
             return
         }
         val canStartFromBackground = Settings.canDrawOverlays(app) || isAccessibilityOn()
@@ -270,6 +281,26 @@ class SyncEngine(context: Context) : Closeable {
         }
     }
 
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /**
+     * Something was taken off the clipboard while one of our windows had focus. Text is handled at once; an image
+     * is decoded off the main thread. [onResult] (main thread) gets the user-facing outcome.
+     */
+    fun onClipboardGrab(grab: ClipboardBridge.Grab, force: Boolean, onResult: ((String) -> Unit)? = null) {
+        if (!force && !clipSync.enabled) return
+        if (grab is ClipboardBridge.Grab.Ready) {
+            val result = onLocalClipboard(grab.content, force)
+            onResult?.invoke(result)
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            val content = runCatching { clipboard.load(grab) }.onFailure { EventLog.error("Reading the copied image failed", it) }.getOrNull()
+            val result = if (content == null) "Couldn't read the copied image" else onLocalClipboard(content, force)
+            if (onResult != null) main.post { onResult(result) }
+        }
+    }
+
     /**
      * Called by the reader activity, the share sheet and the UI with fresh clipboard content.
      * Returns a short, user-facing description of what happened.
@@ -277,8 +308,14 @@ class SyncEngine(context: Context) : Closeable {
     fun onLocalClipboard(content: ClipContent, force: Boolean = false): String {
         val what = describe(content)
         val peers = node.connectedPeers.value
+        if (storage.trustStore.all().isEmpty()) return "Pair with your PC first"
+        if (!force && !clipSync.enabled) return "Clipboard sync is turned off"
         if (!clipSync.isInlineSize(content)) {
             if (content !is ClipContent.Image) return "Too large to sync".also { EventLog.add("Local copy: $what -> too large") }
+            // The big-image path has no duplicate check of its own: don't send the same picture twice.
+            val hash = java.util.Arrays.hashCode(content.png)
+            if (!force && hash == lastBigImage) return "Already sent"
+            lastBigImage = hash
             EventLog.add("Local copy: $what -> sending as a transfer")
             sendToPcs(listOf(BytesFileSource("clipboard.png", content.png, "image/png")), TransferPurpose.TRANSFER_PURPOSE_CLIPBOARD)
             return if (peers.isEmpty()) "PC not connected" else "Sending image to ${peers.first().name}"
@@ -290,10 +327,13 @@ class SyncEngine(context: Context) : Closeable {
             result == ClipResult.DISABLED -> "Clipboard sync is turned off"
             result == ClipResult.DUPLICATE -> "Already sent (nothing new on the clipboard)"
             result != ClipResult.SENT -> "Couldn't send ($result)"
-            peers.isEmpty() -> "PC not connected (will send when it reconnects)"
+            peers.isEmpty() -> "Will send when ${storage.trustStore.all().first().name} connects"
             else -> "Sent to ${peers.joinToString { it.name }}"
         }
     }
+
+    @Volatile
+    private var lastBigImage = 0
 
     private fun describe(c: ClipContent): String = when (c) {
         is ClipContent.Text -> "text, ${c.text.length} chars${if (c.sensitive) ", sensitive" else ""}"

@@ -65,41 +65,56 @@ class PhoneNotificationListener : NotificationListenerService() {
 
 /**
  * Turns phone notifications into [NotificationPosted] messages for the PC and carries out the PC's replies,
- * button taps and dismissals. Skips anything silent, ongoing, media, progress or marked secret.
+ * button taps and dismissals. Skips anything silent, ongoing, media, progress, local-only, from a work profile or
+ * hidden on the lock screen. A notification counts as sent only once a PC actually got it, so a PC that connects
+ * later still gets what's on the phone.
  */
 class PhoneNotifications(
     private val app: Context,
     private val storage: AppStorage,
-    private val send: (NotificationPosted?, String?) -> Unit,
+    /** Sends a post (or a removal key); true if at least one PC got it. */
+    private val send: (NotificationPosted?, String?) -> Boolean,
 ) {
-    private class Sent(val sbn: StatusBarNotification, val title: String, val text: String)
+    /** What's needed to act on a notification later; the latest actions (apps rebuild their PendingIntents). */
+    private class Sent(val title: String, val text: String, @Volatile var actions: Array<Notification.Action>, @Volatile var delivered: Boolean)
 
-    // Most recent first; bounded so a chatty phone can't grow it.
-    private val sent = object : LinkedHashMap<String, Sent>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Sent>) = size > MAX_TRACKED
-    }
+    // Most recent first; bounded so a chatty phone can't grow it (evicted ones are removed on the PC too).
+    private val sent = LinkedHashMap<String, Sent>(64, 0.75f, true)
     private val icons = HashMap<String, ByteArray>()
+    private val labels = HashMap<String, String>()
 
     fun posted(listener: NotificationListenerService, sbn: StatusBarNotification) {
+        // Another app's extras can hold classes we can't unparcel (Android 10–12): never let that crash us.
+        runCatching { postedUnsafe(listener, sbn) }.onFailure { EventLog.error("Skipped a notification", it) }
+    }
+
+    private fun postedUnsafe(listener: NotificationListenerService, sbn: StatusBarNotification) {
         if (!storage.featNotify || !worthForwarding(listener, sbn)) return
         val n = sbn.notification
-        val extras = n.extras
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty().take(MAX_TITLE)
-        val text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))
-            ?.toString().orEmpty().take(MAX_TEXT)
+        val (title, text) = titleAndText(n)
         if (title.isBlank() && text.isBlank()) return
+        val actions = n.actions.orEmpty()
+        val evicted = ArrayList<String>()
         synchronized(sent) {
             val previous = sent[sbn.key]
-            if (previous != null && previous.title == title && previous.text == text) return
-            sent[sbn.key] = Sent(sbn, title, text)
+            if (previous != null && previous.title == title && previous.text == text && previous.delivered) {
+                previous.actions = actions // same content, fresh intents
+                return
+            }
+            sent[sbn.key] = Sent(title, text, actions, delivered = false)
+            while (sent.size > MAX_TRACKED) {
+                val eldest = sent.keys.first()
+                sent.remove(eldest)
+                evicted += eldest
+            }
         }
-        val actions = n.actions.orEmpty()
-        val canReply = storage.notifyReply && actions.any { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
+        for (key in evicted) send(null, key)
+        val canReply = storage.notifyReply && replyAction(actions) != null
         val buttons = if (!storage.notifyReply) emptyList() else actions.withIndex()
-            .filter { (_, a) -> a.remoteInputs.isNullOrEmpty() && !a.title.isNullOrBlank() }
+            .filter { (_, a) -> a.remoteInputs.isNullOrEmpty() && !a.title.isNullOrBlank() && canFireFromBackground(a) }
             .take(MAX_BUTTONS)
             .map { (i, a) -> NotificationButton(id = i.toString(), title = a.title.toString().take(MAX_BUTTON_TITLE)) }
-        send(
+        val delivered = send(
             NotificationPosted(
                 key = sbn.key,
                 app_package = sbn.packageName,
@@ -113,6 +128,15 @@ class PhoneNotifications(
             ),
             null,
         )
+        synchronized(sent) { sent[sbn.key]?.delivered = delivered }
+    }
+
+    /** A PC connected (or turned the feature on): send what's on the phone now. */
+    fun resendActive() {
+        val listener = PhoneNotificationListener.current ?: return
+        synchronized(sent) { for (e in sent.values) e.delivered = false }
+        val active = runCatching { listener.activeNotifications }.getOrNull().orEmpty()
+        for (sbn in active) posted(listener, sbn)
     }
 
     fun removed(key: String) {
@@ -124,18 +148,20 @@ class PhoneNotifications(
     fun act(action: NotificationAction) {
         val entry = synchronized(sent) { sent[action.key] } ?: return
         val listener = PhoneNotificationListener.current
-        val actions = entry.sbn.notification.actions.orEmpty()
+        val actions = entry.actions
         runCatching {
             when {
                 action.dismiss -> listener?.cancelNotification(action.key)
                 action.reply_text.isNotEmpty() && storage.notifyReply -> {
-                    val reply = actions.firstOrNull { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true } ?: return
-                    val inputs = reply.remoteInputs
+                    val reply = replyAction(actions) ?: return
+                    // Only the free-form box gets the text; choice-only inputs (quick replies) stay empty.
+                    val inputs = reply.remoteInputs.filter { it.allowFreeFormInput }.toTypedArray()
                     val results = Bundle().apply {
                         for (input in inputs) putCharSequence(input.resultKey, action.reply_text.take(MAX_REPLY))
                     }
                     val fill = Intent()
                     RemoteInput.addResultsToIntent(inputs, fill, results)
+                    RemoteInput.setResultsSource(fill, RemoteInput.SOURCE_FREE_FORM_INPUT)
                     reply.actionIntent.send(app, 0, fill)
                     EventLog.add("Replied to ${entry.title.ifEmpty { "a notification" }} from the PC")
                 }
@@ -147,18 +173,51 @@ class PhoneNotifications(
 
     fun clear() = synchronized(sent) { sent.clear() }
 
+    /** Prefer the action that says it's a reply; else any action with a free-form text box. */
+    private fun replyAction(actions: Array<Notification.Action>): Notification.Action? {
+        val withBox = actions.filter { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
+        return withBox.firstOrNull { it.semanticAction == Notification.Action.SEMANTIC_ACTION_REPLY } ?: withBox.firstOrNull()
+    }
+
+    /** Android 12+ blocks starting an activity from the background: such a button would do nothing from the PC. */
+    private fun canFireFromBackground(a: Notification.Action): Boolean =
+        android.os.Build.VERSION.SDK_INT < 31 || a.actionIntent?.isActivity != true
+
+    /** Chats show their latest message (and the conversation name for groups), not the summary line. */
+    private fun titleAndText(n: Notification): Pair<String, String> {
+        val extras = n.extras
+        var title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        var text = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString().orEmpty()
+        @Suppress("DEPRECATION")
+        val messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        val last = (messages?.lastOrNull() as? Bundle)
+        if (last != null) {
+            val body = last.getCharSequence("text")?.toString()
+            val sender = last.getCharSequence("sender")?.toString()
+            val conversation = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString()
+            if (!body.isNullOrBlank()) text = if (conversation != null && sender != null) "$sender: $body" else body
+            if (!conversation.isNullOrBlank()) title = conversation
+            else if (!sender.isNullOrBlank()) title = sender
+        }
+        return title.take(MAX_TITLE) to text.take(MAX_TEXT)
+    }
+
     private fun worthForwarding(listener: NotificationListenerService, sbn: StatusBarNotification): Boolean {
         val n = sbn.notification
         if (sbn.packageName == app.packageName || sbn.isOngoing) return false
-        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return false
+        // The app asked for it to stay on this device (e.g. a wearable bridge would skip it too).
+        if (n.flags and (Notification.FLAG_GROUP_SUMMARY or Notification.FLAG_LOCAL_ONLY or Notification.FLAG_FOREGROUND_SERVICE) != 0) return false
+        if (sbn.user != android.os.Process.myUserHandle()) return false // work profile stays on the phone
         if (n.visibility == Notification.VISIBILITY_SECRET) return false
         if (n.category in SKIPPED_CATEGORIES) return false
         if (n.extras.getString(Notification.EXTRA_TEMPLATE)?.contains("MediaStyle") == true) return false
         if (n.extras.containsKey(Notification.EXTRA_PROGRESS_MAX) && n.extras.getInt(Notification.EXTRA_PROGRESS_MAX) > 0) return false
-        // Silent notifications (low importance channels) stay on the phone.
+        // Silent notifications (low importance channels) and channels hidden from the lock screen stay on the phone.
         val ranking = NotificationListenerService.Ranking()
         val rankings = listener.currentRanking ?: return true
-        return !rankings.getRanking(sbn.key, ranking) || ranking.importance >= NotificationManager.IMPORTANCE_DEFAULT
+        if (!rankings.getRanking(sbn.key, ranking)) return true
+        if (ranking.channel?.lockscreenVisibility == Notification.VISIBILITY_SECRET) return false
+        return ranking.importance >= NotificationManager.IMPORTANCE_DEFAULT
     }
 
     /**
@@ -170,9 +229,12 @@ class PhoneNotifications(
         sbn.notification.extras.getParcelable<ApplicationInfo>(EXTRA_APP_INFO)
             ?: runCatching { app.packageManager.getApplicationInfo(sbn.packageName, 0) }.getOrNull()
 
-    private fun appName(sbn: StatusBarNotification): String =
-        (appInfo(sbn)?.let { runCatching { app.packageManager.getApplicationLabel(it).toString() }.getOrNull() } ?: sbn.packageName)
-            .take(MAX_TITLE)
+    private fun appName(sbn: StatusBarNotification): String = synchronized(labels) {
+        labels.getOrPut(sbn.packageName) {
+            (appInfo(sbn)?.let { runCatching { app.packageManager.getApplicationLabel(it).toString() }.getOrNull() } ?: sbn.packageName)
+                .take(MAX_TITLE)
+        }
+    }
 
     private fun icon(sbn: StatusBarNotification): ByteArray? = synchronized(icons) {
         icons.getOrPut(sbn.packageName) {

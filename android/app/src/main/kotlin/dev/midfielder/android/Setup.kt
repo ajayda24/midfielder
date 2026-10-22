@@ -2,7 +2,7 @@ package dev.midfielder.android
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlertDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -26,22 +26,35 @@ object Setup {
             steps += Step(
                 "Notifications", "Shows transfer progress and received files",
                 a.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED, "Allow",
-            ) { it.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS) }
+            ) { act ->
+                // Refused twice: Android won't ask again, so go to Midfielder's notification settings instead.
+                if (Permissions.blocked(act, Manifest.permission.POST_NOTIFICATIONS)) {
+                    Permissions.openSafely(act, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, act.packageName))
+                } else {
+                    Permissions.request(act, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+                }
+            }
         }
         steps += Step(
             "No battery limits", "Keeps the connection alive in the background",
             a.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(a.packageName), "Fix",
         ) {
             @Suppress("BatteryLife")
-            it.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${it.packageName}")))
+            Permissions.openSafely(
+                it, Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${it.packageName}")),
+                fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+            )
         }
-        steps += Step(
-            "Display over other apps", "Lets Midfielder read a copy for an instant in the background",
-            Settings.canDrawOverlays(a), "Allow",
-        ) { it.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${it.packageName}"))) }
+        val accessibility = isAccessibilityOn(a)
+        // Accessibility also lets Midfielder read copies in the background, so this step isn't needed with it.
+        if (!accessibility) {
+            steps += Step(
+                "Display over other apps", "Lets Midfielder read a copy for an instant in the background",
+                Settings.canDrawOverlays(a), "Allow",
+            ) { Permissions.openSafely(it, Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${it.packageName}"))) }
+        }
 
         val readLogs = a.checkSelfPermission(Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
-        val accessibility = isAccessibilityOn(a)
         val approved = SyncEngine.current?.logDetectionActive == true
         steps += Step(
             "Detect copies automatically",
@@ -63,15 +76,16 @@ object Setup {
     }
 
     fun showDetectionHelp(a: Activity) {
-        AlertDialog.Builder(a).setTitle("Detect copies automatically")
+        val restricted = Permissions.restrictedSettingsHint?.let { "\n\n$it" }.orEmpty()
+        MaterialAlertDialogBuilder(a).setTitle("Detect copies automatically")
             .setMessage(
                 "Best: from a PC with USB debugging on, run once:\n\n$ADB_GRANT\n\n" +
                     "then reopen Midfielder and tap \"Allow\" when Android asks.\n\n" +
-                    "No PC handy? Turn on Midfielder in Accessibility instead.",
+                    "No PC handy? Turn on Midfielder in Accessibility instead.$restricted",
             )
             .setPositiveButton("Copy command") { _, _ -> copy(a, ADB_GRANT) }
-            .setNeutralButton("Accessibility") { _, _ -> a.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-            .setNegativeButton("Close", null)
+            .setNeutralButton("Accessibility") { _, _ -> Permissions.openSafely(a, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            .setNegativeButton("App info") { _, _ -> Permissions.openAppSettings(a) }
             .show()
     }
 

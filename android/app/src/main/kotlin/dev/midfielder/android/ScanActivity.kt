@@ -53,15 +53,26 @@ class ScanActivity : Activity() {
     @Volatile
     private var found = false
 
+    /** Set when the activity pauses: a camera that opens late is closed at once, frames are no longer read. */
+    @Volatile
+    private var paused = true
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         texture = TextureView(this)
+        val pad = (16 * resources.displayMetrics.density).toInt()
         val hint = TextView(this).apply {
             text = "Point the camera at the QR code on your PC"
             textSize = 16f
-            setPadding(32, 32, 32, 32)
+            setPadding(pad, pad, pad, pad)
             setBackgroundColor(0x99000000.toInt())
             setTextColor(0xFFFFFFFF.toInt())
+        }
+        // Edge to edge (Android 15+): keep the hint above the navigation bar.
+        hint.setOnApplyWindowInsetsListener { v, insets ->
+            val bottom = insets.getInsets(android.view.WindowInsets.Type.systemBars()).bottom
+            v.setPadding(pad, pad, pad, pad + bottom)
+            insets
         }
         setContentView(
             FrameLayout(this).apply {
@@ -74,6 +85,7 @@ class ScanActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        paused = false
         thread = HandlerThread("qr-scan").also { it.start() }
         handler = Handler(thread!!.looper)
         if (texture.isAvailable) openCamera()
@@ -86,42 +98,74 @@ class ScanActivity : Activity() {
     }
 
     override fun onPause() {
-        closeCamera()
-        thread?.quitSafely()
+        paused = true
+        // Close on the camera thread: a frame may be mid-decode there, and closing the reader under it crashes.
+        val h = handler
+        val t = thread
+        if (h != null) h.post { closeCamera() } else closeCamera()
+        t?.quitSafely()
         thread = null
         handler = null
         super.onPause()
     }
 
-    @SuppressLint("MissingPermission")
-    private fun openCamera() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+    private fun fail(reason: String) {
+        runOnUiThread {
+            if (isFinishing) return@runOnUiThread
+            setResult(RESULT_CANCELED, Intent().putExtra(EXTRA_ERROR, reason))
             finish()
+        }
+    }
+
+    private fun openCamera() {
+        if (paused) return
+        try {
+            openCameraUnsafe()
+        } catch (e: Exception) {
+            // In use by another app (split screen), disabled by policy, or the camera service is down.
+            EventLog.error("Camera unavailable for scanning", e)
+            fail("The camera isn't available right now. Close other apps using it and try again.")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openCameraUnsafe() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            fail("Camera access is needed to scan the code.")
             return
         }
         val manager = getSystemService(CameraManager::class.java)
         val id = manager.cameraIdList.firstOrNull {
             manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
         } ?: manager.cameraIdList.firstOrNull() ?: run {
-            finish()
+            fail("This phone has no camera to scan with.")
             return
         }
-        val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
+        val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: run {
+            fail("This camera can't be used for scanning.")
+            return
+        }
         val size = chooseSize(map.getOutputSizes(ImageFormat.YUV_420_888))
         val h = handler ?: return
         reader = ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2).apply {
             setOnImageAvailableListener({ r ->
-                val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+                val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
                 try {
-                    if (!found) decode(image)
+                    if (!found && !paused) decode(image)
+                } catch (_: IllegalStateException) {
+                    // The reader was closed under us while pausing: nothing to do.
                 } finally {
-                    image.close()
+                    runCatching { image.close() }
                 }
             }, h)
         }
         fitPreview(size)
         manager.openCamera(id, object : CameraDevice.StateCallback() {
             override fun onOpened(device: CameraDevice) {
+                if (paused) {
+                    device.close() // left before the camera finished opening
+                    return
+                }
                 camera = device
                 startSession(device, size)
             }
@@ -134,7 +178,7 @@ class ScanActivity : Activity() {
             override fun onError(device: CameraDevice, error: Int) {
                 device.close()
                 camera = null
-                runOnUiThread { finish() }
+                fail("The camera stopped working. Try again.")
             }
         }, h)
     }
@@ -162,7 +206,7 @@ class ScanActivity : Activity() {
                 }
 
                 override fun onConfigureFailed(s: CameraCaptureSession) {
-                    runOnUiThread { finish() }
+                    fail("The camera couldn't start. Try again.")
                 }
             },
         )
@@ -226,6 +270,7 @@ class ScanActivity : Activity() {
 
     companion object {
         const val EXTRA_URI = "uri"
+        const val EXTRA_ERROR = "error"
         private const val TARGET_PIXELS = 1280 * 720
     }
 }

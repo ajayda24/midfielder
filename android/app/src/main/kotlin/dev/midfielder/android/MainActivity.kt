@@ -2,21 +2,22 @@ package dev.midfielder.android
 
 import android.Manifest
 import android.app.RecoverableSecurityException
-import android.content.pm.ApplicationInfo
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.IntentSender
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.activity.OnBackPressedCallback
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -31,15 +32,20 @@ import dev.midfielder.android.ui.Ui
 import dev.midfielder.core.crypto.PairingInvite
 import dev.midfielder.core.history.TransferRecord
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * The app's only regular screen: four tabs (Home, Files, Settings, Developer) over a bottom bar. Framework views
- * only. A tab's view and its coroutines exist only while it's shown and the activity is resumed.
+ * The app's only regular screen: three tabs (Home, Files, Settings) over a bottom bar, plus Developer, opened from
+ * Settings. Framework views only. Each tab's view is built once and kept while the activity lives, so switching
+ * tabs keeps scroll position and selection; a tab's coroutines run only while it's shown and the activity is
+ * resumed.
  */
 class MainActivity : AppCompatActivity() {
     lateinit var ui: Ui
@@ -47,12 +53,16 @@ class MainActivity : AppCompatActivity() {
 
     private val scope = MainScope()
     private var tabJob: Job? = null
+    private var resumeJob: Job? = null
+    private val tabs = HashMap<String, Pair<Tab, View>>()
     private var tab: Tab? = null
-    private var tabName = TAB_HOME
+    private var tabName = ""
     private var resumed = false
     private lateinit var content: FrameLayout
     private lateinit var nav: BottomNavigationView
     private val pendingDelete = ArrayList<String>()
+    private var pendingInvite: String? = null
+    private var pairing: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,11 +70,16 @@ class MainActivity : AppCompatActivity() {
         SyncService.start(this)
         setContentView(buildFrame())
         showTab(savedInstanceState?.getString(STATE_TAB) ?: intent.getStringExtra(EXTRA_TAB) ?: TAB_HOME)
-        handleIntent(intent)
+        // Only a fresh launch acts on its intent: after rotation, a theme change or a restore from Recents the same
+        // intent comes back, and must not reopen a file or ask to pair again.
+        val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) handleIntent(intent)
+        savedInstanceState?.getString(STATE_INVITE)?.let(::confirmPairing) // the question survives rotation
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
                     tab?.onBack() == true -> Unit
+                    tabName == TAB_DEVELOPER -> showTab(TAB_SETTINGS)
                     tabName != TAB_HOME -> showTab(TAB_HOME)
                     else -> {
                         isEnabled = false
@@ -74,49 +89,57 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
-        if (intent.getBooleanExtra(EXTRA_DEMO, false) && (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-            Demo.seed(this)
-        }
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_DEMO, false) && isDebuggable()) Demo.seed(this)
         demoFeatures(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         demoFeatures(intent)
         intent.getStringExtra(EXTRA_TAB)?.let(::showTab)
         handleIntent(intent)
     }
 
+    private fun isDebuggable() = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+
     /** Debug builds only: turn every feature on for screenshots (`--ez demo_features true`). */
     private fun demoFeatures(intent: Intent) {
-        if (!intent.getBooleanExtra(EXTRA_DEMO_FEATURES, false) || (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) return
+        if (!intent.getBooleanExtra(EXTRA_DEMO_FEATURES, false) || !isDebuggable()) return
         Demo.allFeatures(this)
-        val current = tabName
+        // Rebuild every tab so the new switches show.
+        val current = tabName.ifEmpty { TAB_HOME }
+        stopTab()
+        tabs.clear()
+        tab = null
         tabName = ""
-        showTab(current) // rebuild the current tab with the new switches
+        content.removeAllViews()
+        showTab(current)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_TAB, tabName)
+        pendingInvite?.let { outState.putString(STATE_INVITE, it) }
     }
 
     override fun onResume() {
         super.onResume()
         resumed = true
-        scope.launch {
-            var engine = SyncEngine.current
-            while (engine == null) {
-                delay(100)
-                engine = SyncEngine.current
-            }
+        resumeJob = scope.launch {
+            val engine = awaitEngine() ?: return@launch
+            if (!resumed) return@launch
             engine.onUiResumed()
+            // Permissions granted (or revoked) in Android's settings while we were away take effect now.
+            engine.features.apply()
         }
         startTab()
     }
 
     override fun onPause() {
         resumed = false
+        resumeJob?.cancel()
+        resumeJob = null
         SyncEngine.current?.uiInForeground = false
         stopTab()
         super.onPause()
@@ -124,14 +147,30 @@ class MainActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // We have focus, so reading is allowed: pick up anything copied while we were away.
-        if (hasFocus) SyncEngine.current?.let { e -> runCatching { ClipboardBridge(this).read() }.getOrNull()?.let { e.onLocalClipboard(it) } }
+        // We have focus, so reading is allowed: pick up anything copied while we were away (only if it changed,
+        // and only when clipboard sync is on; an image is read off the main thread).
+        if (!hasFocus) return
+        val engine = SyncEngine.current ?: return
+        if (!engine.clipSync.enabled) return
+        runCatching { ClipboardBridge(this).grab() }.getOrNull()?.let { engine.onClipboardGrab(it, force = false) }
     }
 
     override fun onDestroy() {
         stopTab()
+        pairing?.dismiss()
+        tabs.values.forEach { (t, _) -> t.destroy() }
         scope.cancel()
         super.onDestroy()
+    }
+
+    /** The engine, once the service has built it (normally instant); null if it doesn't come up in time. */
+    private suspend fun awaitEngine(): SyncEngine? = withTimeoutOrNull(ENGINE_WAIT_MS) {
+        var engine = SyncEngine.current
+        while (engine == null) {
+            delay(100)
+            engine = SyncEngine.current
+        }
+        engine
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -148,47 +187,67 @@ class MainActivity : AppCompatActivity() {
             labelVisibilityMode = NavigationBarView.LABEL_VISIBILITY_LABELED
             setBackgroundColor(ui.container)
             itemActiveIndicatorColor = android.content.res.ColorStateList.valueOf(ui.primaryContainer)
-            TABS.forEachIndexed { i, (_, label, icon) -> menu.add(0, i, i, label).setIcon(icon) }
+            NAV.forEachIndexed { i, (_, label, icon) -> menu.add(0, i, i, label).setIcon(icon) }
             setOnItemSelectedListener { item ->
-                showTab(TABS[item.itemId].first)
+                showTab(NAV[item.itemId].first)
                 true
+            }
+            // Tapping the tab you're on goes back to its top.
+            setOnItemReselectedListener { item ->
+                val name = NAV[item.itemId].first
+                if (name == TAB_SETTINGS && tabName == TAB_DEVELOPER) showTab(TAB_SETTINGS) else tab?.scrollToTop()
             }
         }
         root.addView(nav, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        // Android 15+ draws edge to edge: keep content clear of the status bar (the nav bar pads itself).
+        // Android 15+ draws edge to edge: keep content clear of the status bar, and of side bars and cutouts in
+        // landscape (the bottom bar pads itself).
         root.setOnApplyWindowInsetsListener { v, insets ->
-            val top = if (Build.VERSION.SDK_INT >= 30) {
-                insets.getInsets(WindowInsets.Type.systemBars()).top
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                v.setPadding(bars.left, bars.top, bars.right, 0)
             } else {
                 @Suppress("DEPRECATION")
-                insets.systemWindowInsetTop
+                v.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, 0)
             }
-            v.setPadding(0, top, 0, 0)
             insets
         }
         return root
     }
 
     private fun renderNav() {
-        val index = TABS.indexOfFirst { it.first == tabName }
+        val shown = if (tabName == TAB_DEVELOPER) TAB_SETTINGS else tabName
+        val index = NAV.indexOfFirst { it.first == shown }
         if (index >= 0 && nav.selectedItemId != index) nav.selectedItemId = index
     }
 
     fun showTab(name: String) {
-        if (TABS.none { it.first == name }) return
+        if (name !in ALL_TABS) return
         if (name == tabName && tab != null) return
         stopTab()
+        tabs[tabName]?.second?.visibility = View.GONE
         tabName = name
-        tab = when (name) {
-            TAB_FILES -> FilesTab(this)
-            TAB_SETTINGS -> SettingsTab(this)
-            TAB_DEVELOPER -> DeveloperTab(this)
-            else -> HomeTab(this)
+        val (t, view) = tabs.getOrPut(name) {
+            val created = when (name) {
+                TAB_FILES -> FilesTab(this)
+                TAB_SETTINGS -> SettingsTab(this)
+                TAB_DEVELOPER -> DeveloperTab(this)
+                else -> HomeTab(this)
+            }
+            val v = created.build()
+            created.view = v
+            content.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            created to v
         }
-        content.removeAllViews()
-        content.addView(tab!!.build(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        tab = t
+        view.visibility = View.VISIBLE
         renderNav()
         if (resumed) startTab()
+    }
+
+    /** Opens Settings scrolled to the automatic-copy checklist (from Home's "Finish setup" banner). */
+    fun showSetup() {
+        showTab(TAB_SETTINGS)
+        (tab as? SettingsTab)?.scrollToSetup()
     }
 
     private fun startTab() {
@@ -209,31 +268,52 @@ class MainActivity : AppCompatActivity() {
     // Actions used by the tabs
 
     fun sendClipboardNow() {
-        val engine = SyncEngine.current
-        val content = runCatching { ClipboardBridge(this).read() }
+        val engine = SyncEngine.current ?: return snack("Midfielder is still starting. Try again in a moment.")
+        if (noPcPaired(engine)) return
+        val grab = runCatching { ClipboardBridge(this).grab(force = true) }
             .onFailure { EventLog.error("Reading the clipboard failed", it) }
             .getOrNull()
-        when {
-            engine == null -> toast("Midfielder is still starting, try again")
-            content == null -> toast("The clipboard is empty, or Android didn't let Midfielder read it").also {
-                EventLog.add("Manual send: clipboard empty or unreadable")
-            }
-            else -> toast(engine.onLocalClipboard(content, force = true))
+        if (grab == null) {
+            EventLog.add("Manual send: clipboard empty or unreadable")
+            return snack("The clipboard is empty")
         }
+        engine.onClipboardGrab(grab, force = true) { snack(it) }
     }
 
     fun pickFiles() {
-        @Suppress("DEPRECATION")
-        startActivityForResult(
-            Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
-                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
-            REQ_PICK_FILES,
-        )
+        val engine = SyncEngine.current
+        if (engine != null && noPcPaired(engine)) return
+        val open = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(open, REQ_PICK_FILES)
+        } catch (_: ActivityNotFoundException) {
+            // Some managed or Go devices have no document picker.
+            runCatching {
+                @Suppress("DEPRECATION")
+                startActivityForResult(
+                    Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
+                    REQ_PICK_FILES,
+                )
+            }.onFailure { snack("This phone has no file picker") }
+        }
+    }
+
+    /** With nothing paired there's nowhere to send: say so, with a way to pair. */
+    private fun noPcPaired(engine: SyncEngine): Boolean {
+        if (engine.status.value.paired.isNotEmpty()) return false
+        snack("Pair with your PC first", "Pair") { startScan() }
+        return true
     }
 
     fun startScan() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            if (Permissions.blocked(this, Manifest.permission.CAMERA)) {
+                snack("Allow the camera for Midfielder to scan the code", "Settings") { Permissions.openAppSettings(this) }
+            } else {
+                Permissions.request(this, arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            }
             return
         }
         @Suppress("DEPRECATION")
@@ -247,38 +327,47 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Deletes received files from MediaStore. Files we no longer own (e.g. after a reinstall) need the user's OK. */
+    /**
+     * Deletes received files from MediaStore, off the main thread (many files = many calls). Files we no longer own
+     * (e.g. after a reinstall) need the user's OK; only what was really deleted leaves the history.
+     */
     fun deleteReceived(records: List<TransferRecord>) {
-        val store = HistoryStore.get(this)
-        val done = ArrayList<String>()
-        val needConsent = ArrayList<Pair<String, Uri>>()
-        var recoverable: RecoverableSecurityException? = null
-        for (r in records) {
-            val uri = FileActions.uriOf(r) ?: continue
-            try {
-                contentResolver.delete(uri, null, null)
-                done += r.id
-            } catch (e: SecurityException) {
-                needConsent += r.id to uri
-                if (e is RecoverableSecurityException) recoverable = e
+        scope.launch {
+            val store = HistoryStore.get(this@MainActivity)
+            val done = ArrayList<String>()
+            val needConsent = ArrayList<Pair<String, Uri>>()
+            var recoverable: RecoverableSecurityException? = null
+            withContext(Dispatchers.IO) {
+                for (r in records) {
+                    val uri = FileActions.uriOf(r) ?: continue
+                    try {
+                        contentResolver.delete(uri, null, null)
+                        done += r.id
+                    } catch (e: SecurityException) {
+                        // Android 10 can only ask about one file at a time: ask for the first, keep the rest.
+                        if (Build.VERSION.SDK_INT < 30 && needConsent.isNotEmpty()) continue
+                        needConsent += r.id to uri
+                        if (e is RecoverableSecurityException) recoverable = e
+                    }
+                }
             }
-        }
-        store.remove(done)
-        if (needConsent.isEmpty()) {
-            toast(if (done.size == 1) "Deleted" else "Deleted ${done.size} files")
-            return
-        }
-        pendingDelete.clear()
-        pendingDelete += needConsent.map { it.first }
-        val sender: IntentSender? = if (Build.VERSION.SDK_INT >= 30) {
-            MediaStore.createDeleteRequest(contentResolver, needConsent.map { it.second }).intentSender
-        } else {
-            recoverable?.userAction?.actionIntent?.intentSender
-        }
-        if (sender == null) return toast("Android didn't allow deleting this file")
-        runCatching {
-            @Suppress("DEPRECATION")
-            startIntentSenderForResult(sender, REQ_DELETE, null, 0, 0, 0)
+            store.remove(done)
+            if (needConsent.isEmpty()) {
+                snack(if (done.size == 1) "Deleted" else "Deleted ${done.size} files")
+                return@launch
+            }
+            pendingDelete.clear()
+            pendingDelete += needConsent.map { it.first }
+            val sender: IntentSender? = if (Build.VERSION.SDK_INT >= 30) {
+                MediaStore.createDeleteRequest(contentResolver, needConsent.map { it.second }).intentSender
+            } else {
+                recoverable?.userAction?.actionIntent?.intentSender
+            }
+            if (sender == null) return@launch snack("Android didn't allow deleting this file")
+            runCatching {
+                @Suppress("DEPRECATION")
+                startIntentSenderForResult(sender, REQ_DELETE, null, 0, 0, 0)
+            }
         }
     }
 
@@ -297,27 +386,50 @@ class MainActivity : AppCompatActivity() {
 
     private fun confirmPairing(uri: String) {
         val invite = runCatching { PairingInvite.parse(uri) }.getOrElse {
-            toast("That isn't a Midfielder pairing code")
+            snack("That isn't a Midfielder pairing code")
             return
         }
+        // A pairing code always points at a PC on your own network; anything else is someone else's PC.
+        if (!PairLinks.isLocal(invite)) {
+            snack("That code points outside your network, so Midfielder won't pair with it")
+            EventLog.add("Refused a pairing code for a non-local address")
+            return
+        }
+        pendingInvite = uri
         MaterialAlertDialogBuilder(this)
             .setTitle("Pair with ${invite.name}?")
-            .setMessage("Check that your PC shows this fingerprint:\n\n${invite.fingerprint.display()}")
-            .setPositiveButton("Pair") { _, _ -> pair(invite) }
-            .setNegativeButton("Cancel", null)
+            .setMessage(
+                "Only pair with your own PC: it will get everything you copy and the files you send.\n\n" +
+                    "Check that your PC shows this fingerprint:\n\n${invite.fingerprint.display()}",
+            )
+            .setPositiveButton("Pair") { _, _ ->
+                pendingInvite = null
+                pair(invite)
+            }
+            .setNegativeButton("Cancel") { _, _ -> pendingInvite = null }
+            .setOnCancelListener { pendingInvite = null }
             .show()
     }
 
+    /** Pairing runs in the engine, so rotating or leaving the screen doesn't cancel it. */
     private fun pair(invite: PairingInvite) {
+        pairing = MaterialAlertDialogBuilder(this)
+            .setTitle("Pairing with ${invite.name}…")
+            .setMessage("Keep Midfielder open on your PC.")
+            .setCancelable(false)
+            .show()
         scope.launch {
-            var engine = SyncEngine.current
-            while (engine == null) {
-                delay(100)
-                engine = SyncEngine.current
+            val engine = awaitEngine()
+            if (engine == null) {
+                pairing?.dismiss()
+                return@launch snack("Midfielder didn't start. Close it and open it again.")
             }
-            runCatching { engine.pair(invite) }
-                .onSuccess { toast("Paired with ${it.name}") }
-                .onFailure { toast("Pairing failed: ${it.message}") }
+            engine.pairInBackground(invite) { result ->
+                pairing?.dismiss()
+                pairing = null
+                result.onSuccess { snack("Paired with ${it.name}") }
+                    .onFailure { snack(PairLinks.describeFailure(invite, it)) }
+            }
         }
     }
 
@@ -328,9 +440,13 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == REQ_DELETE) {
             if (resultCode == RESULT_OK) {
                 HistoryStore.get(this).remove(pendingDelete.toList())
-                toast("Deleted")
+                snack("Deleted")
             }
             pendingDelete.clear()
+            return
+        }
+        if (requestCode == REQ_SCAN && resultCode != RESULT_OK) {
+            data?.getStringExtra(ScanActivity.EXTRA_ERROR)?.let { snack(it) }
             return
         }
         if (resultCode != RESULT_OK || data == null) return
@@ -339,24 +455,40 @@ class MainActivity : AppCompatActivity() {
             REQ_PICK_FILES -> {
                 val clip = data.clipData
                 val uris = if (clip != null) (0 until clip.itemCount).map { clip.getItemAt(it).uri } else listOfNotNull(data.data)
+                // Keep access, so sent files can still be opened or shared from Files later.
+                for (u in uris) runCatching { contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 SyncService.sendUris(this, uris)
-                toast(if (uris.size == 1) "Sending file" else "Sending ${uris.size} files")
+                snack(sendingText(uris.size))
             }
+        }
+    }
+
+    /** "Sending" only when a PC is there to receive; otherwise when it will go. */
+    private fun sendingText(count: Int): String {
+        val what = if (count == 1) "file" else "$count files"
+        val status = SyncEngine.current?.status?.value ?: return "Sending $what"
+        return when {
+            status.connected.isNotEmpty() -> "Sending $what to ${status.connected.first()}"
+            status.paired.isNotEmpty() -> "The $what will go when ${status.paired.first()} connects"
+            else -> "Pair with your PC first"
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_CAMERA && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startScan()
-        (tab as? SettingsTab)?.renderChecklist()
-        if (requestCode == REQ_FEATURES) (tab as? SettingsTab)?.onPermissionsResult()
-        (tab as? HomeTab)?.refreshSetup()
+        if (requestCode == REQ_CAMERA) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startScan()
+            else snack("Camera access is needed to scan. You can also scan the code with any camera app.")
+        }
+        val settings = tabs[TAB_SETTINGS]?.first as? SettingsTab
+        settings?.renderChecklist()
+        if (requestCode == REQ_FEATURES) settings?.onPermissionsResult()
+        (tabs[TAB_HOME]?.first as? HomeTab)?.refreshSetup()
     }
 
-    private fun toast(s: String) = snack(s)
-
-    /** Short message above the navigation bar, with an optional action (e.g. Undo). */
+    /** Short message above the navigation bar, with an optional action (e.g. Undo). All feedback goes here. */
     fun snack(text: String, action: String? = null, onAction: (() -> Unit)? = null) {
+        if (isFinishing || isDestroyed) return
         val bar = Snackbar.make(content, text, Snackbar.LENGTH_LONG).setAnchorView(nav)
         if (action != null && onAction != null) bar.setAction(action) { onAction() }
         bar.show()
@@ -373,13 +505,16 @@ class MainActivity : AppCompatActivity() {
         const val TAB_SETTINGS = "settings"
         const val TAB_DEVELOPER = "developer"
 
-        private val TABS = listOf(
+        /** The bottom bar; Developer is reached from Settings. */
+        private val NAV = listOf(
             Triple(TAB_HOME, "Home", R.drawable.ic_home),
             Triple(TAB_FILES, "Files", R.drawable.ic_folder),
             Triple(TAB_SETTINGS, "Settings", R.drawable.ic_settings),
-            Triple(TAB_DEVELOPER, "Developer", R.drawable.ic_code),
         )
+        private val ALL_TABS = setOf(TAB_HOME, TAB_FILES, TAB_SETTINGS, TAB_DEVELOPER)
         private const val STATE_TAB = "tab"
+        private const val STATE_INVITE = "invite"
+        private const val ENGINE_WAIT_MS = 10_000L
         const val REQ_FEATURES = 20
         private const val REQ_SCAN = 1
         private const val REQ_PICK_FILES = 2

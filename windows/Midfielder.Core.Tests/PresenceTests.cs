@@ -84,6 +84,20 @@ public class PresenceTests
     }
 
     [Fact]
+    public void BeaconCarryingTwoPcsTokensMatchesEach()
+    {
+        byte[] mine = new byte[32], other = new byte[32];
+        mine[0] = 1;
+        other[0] = 2;
+        long slot = PresenceToken.Slot(T0);
+        byte[] data = [PresenceToken.Version, .. PresenceToken.Compute(other, slot), .. PresenceToken.Compute(mine, slot)];
+        Assert.True(PresenceToken.MatchesAny(mine, data, T0));
+        Assert.True(PresenceToken.MatchesAny(other, data, T0));
+        Assert.False(PresenceToken.MatchesAny(new byte[32], data, T0));
+        Assert.False(PresenceToken.MatchesAny(mine, data.AsSpan(0, 12), T0)); // not a whole number of tokens
+    }
+
+    [Fact]
     public void TokenMatchesNeighbouringSlotsOnly()
     {
         var key = new byte[32];

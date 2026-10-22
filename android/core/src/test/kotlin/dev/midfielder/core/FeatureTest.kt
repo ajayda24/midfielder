@@ -132,6 +132,13 @@ class FeatureTest {
         assertNull(a.update(16, charging = false))
         assertNull(a.update(15, charging = false))
         assertNull(a.update(21, charging = false)) // moved well away: re-armed
+
+        // Raising the level after the 80% alert fired: the new 90% alert still comes.
+        val b = BatteryAlerts(fullAt = 80)
+        assertEquals(BatteryAlerts.Alert.FULL, b.update(82, charging = true))
+        b.fullAt = 90
+        assertNull(b.update(85, charging = true))
+        assertEquals(BatteryAlerts.Alert.FULL, b.update(90, charging = true))
         assertEquals(BatteryAlerts.Alert.LOW, a.update(15, charging = false))
     }
 }

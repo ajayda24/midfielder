@@ -22,33 +22,65 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * App-private files encrypted with an AES-256-GCM key that never leaves the Android Keystore
  * (hardware-backed where available). Holds the device identity and the paired-device list.
+ *
+ * Reading tells "not there" apart from "couldn't decrypt": a Keystore hiccup must never look like a fresh install,
+ * or the phone would make a new identity and silently lose its pairing. Writes are atomic (fsync, then rename).
  */
 class SecureFiles(context: Context) {
     private val dir = File(context.noBackupFilesDir, "secure").apply { mkdirs() }
 
-    fun read(name: String): ByteArray? {
+    sealed interface Read {
+        class Ok(val bytes: ByteArray) : Read
+        data object Missing : Read
+        class Failed(val error: Throwable) : Read
+    }
+
+    /** Reads and decrypts [name], retrying a couple of times: the Keystore can fail transiently on some devices. */
+    fun readResult(name: String): Read {
         val f = File(dir, name)
-        if (!f.exists()) return null
-        return runCatching {
-            val blob = f.readBytes()
-            val iv = blob.copyOfRange(0, IV_BYTES)
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
-            cipher.doFinal(blob, IV_BYTES, blob.size - IV_BYTES)
-        }.getOrNull()
+        if (!f.exists()) return Read.Missing
+        var last: Throwable? = null
+        repeat(3) { attempt ->
+            try {
+                val blob = android.util.AtomicFile(f).readFully()
+                val iv = blob.copyOfRange(0, IV_BYTES)
+                val cipher = Cipher.getInstance(TRANSFORMATION)
+                cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, iv))
+                return Read.Ok(cipher.doFinal(blob, IV_BYTES, blob.size - IV_BYTES))
+            } catch (e: Exception) {
+                last = e
+                if (attempt < 2) Thread.sleep(150L * (attempt + 1))
+            }
+        }
+        return Read.Failed(last!!)
+    }
+
+    /** The decrypted contents, or null if missing or unreadable (for data that can be rebuilt). */
+    fun read(name: String): ByteArray? = (readResult(name) as? Read.Ok)?.bytes
+
+    /** Keeps an unreadable file aside (never overwritten) so a later fix or a support check can still use it. */
+    fun quarantine(name: String) {
+        val f = File(dir, name)
+        if (f.exists()) f.renameTo(File(dir, "$name.bad-${System.currentTimeMillis()}"))
     }
 
     fun delete(name: String) {
-        File(dir, name).delete()
+        android.util.AtomicFile(File(dir, name)).delete()
     }
 
     fun write(name: String, data: ByteArray) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val out = cipher.iv + cipher.doFinal(data)
-        val tmp = File(dir, "$name.tmp")
-        tmp.writeBytes(out)
-        if (!tmp.renameTo(File(dir, name))) error("could not save $name")
+        val file = android.util.AtomicFile(File(dir, name))
+        val stream = file.startWrite()
+        try {
+            stream.write(out)
+            file.finishWrite(stream) // fsyncs before replacing the old file
+        } catch (e: Exception) {
+            file.failWrite(stream)
+            throw e
+        }
     }
 
     private fun key(): SecretKey {
@@ -77,21 +109,54 @@ class AppStorage(context: Context) {
     private val files = SecureFiles(context)
     val prefs: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    /** Set when stored data couldn't be read and had to be set aside (the UI tells the user to pair again). */
+    @Volatile
+    var storageProblem: String? = null
+        private set
+
+    /**
+     * This phone's identity. A new one is made only on a genuinely fresh install; an unreadable one is kept aside
+     * (not overwritten) and reported, since a new identity means every PC has to pair again.
+     */
     fun loadOrCreateIdentity(): DeviceIdentity {
-        files.read(IDENTITY)?.let { bytes ->
-            runCatching { return DeviceIdentity.fromPkcs12(bytes, PKCS12_PASSWORD) }
+        when (val r = files.readResult(IDENTITY)) {
+            is SecureFiles.Read.Ok -> {
+                runCatching { return DeviceIdentity.fromPkcs12(r.bytes, PKCS12_PASSWORD) }
+                    .onFailure { EventLog.error("The stored identity is damaged", it) }
+                files.quarantine(IDENTITY)
+                storageProblem = "Midfielder's saved identity was damaged. Pair with your PC again."
+            }
+            is SecureFiles.Read.Failed -> {
+                EventLog.error("Couldn't unlock the stored identity", r.error)
+                files.quarantine(IDENTITY)
+                storageProblem = "Android couldn't unlock Midfielder's saved keys. Pair with your PC again."
+            }
+            SecureFiles.Read.Missing -> Unit
         }
         val identity = DeviceIdentity.generate()
         files.write(IDENTITY, identity.toPkcs12(PKCS12_PASSWORD))
         return identity
     }
 
-    /** Paired PCs, written through to encrypted storage on every change (rare). */
-    val trustStore: TrustStore = object : TrustStore {
+    /** Paired PCs, written through to encrypted storage on every change (rare). Loaded on first use. */
+    val trustStore: TrustStore by lazy { createTrustStore() }
+
+    private fun createTrustStore(): TrustStore = object : TrustStore {
         private val map = ConcurrentHashMap<Fingerprint, PairedDevice>().apply {
-            files.read(DEVICES)?.let { bytes ->
+            val bytes = when (val r = files.readResult(DEVICES)) {
+                is SecureFiles.Read.Ok -> r.bytes
+                is SecureFiles.Read.Failed -> {
+                    // Keep it aside rather than overwrite it with an empty list on the next pairing.
+                    EventLog.error("Couldn't unlock the paired-PC list", r.error)
+                    files.quarantine(DEVICES)
+                    storageProblem = storageProblem ?: "Android couldn't unlock the list of paired PCs. Pair with your PC again."
+                    null
+                }
+                SecureFiles.Read.Missing -> null
+            }
+            bytes?.let {
                 runCatching {
-                    val arr = JSONArray(String(bytes, Charsets.UTF_8))
+                    val arr = JSONArray(String(it, Charsets.UTF_8))
                     for (i in 0 until arr.length()) {
                         val o = arr.getJSONObject(i)
                         val fp = Fingerprint(o.getString("fp"))
@@ -229,15 +294,55 @@ class AppStorage(context: Context) {
         get() = prefs.getBoolean("feat_presence", false)
         set(v) = prefs.edit().putBoolean("feat_presence", v).apply()
 
-    /** The beacon key the PC sent (encrypted at rest), or null before it has. */
-    var presenceKey: ByteArray?
-        get() = files.read(PRESENCE_KEY)
-        set(v) {
-            if (v == null) files.delete(PRESENCE_KEY) else files.write(PRESENCE_KEY, v)
+    /**
+     * Auto-lock beacon keys, one per PC (fingerprint hex → key), encrypted at rest and cached in memory: they're
+     * read on every feature refresh, which must not touch the Keystore each time.
+     */
+    val presenceKeys: Map<String, ByteArray>
+        get() = loadPresenceKeys()
+
+    fun setPresenceKey(pcFingerprint: String, key: ByteArray?) {
+        synchronized(PresenceCache) {
+            val next = loadPresenceKeys().toMutableMap()
+            if (key == null) next.remove(pcFingerprint) else next[pcFingerprint] = key
+            val json = JSONObject()
+            for ((fp, k) in next) json.put(fp, android.util.Base64.encodeToString(k, android.util.Base64.NO_WRAP))
+            if (next.isEmpty()) files.delete(PRESENCE_KEYS) else files.write(PRESENCE_KEYS, json.toString().toByteArray())
+            PresenceCache.keys = next
         }
+    }
+
+    fun clearPresenceKeys() = synchronized(PresenceCache) {
+        files.delete(PRESENCE_KEYS)
+        files.delete(LEGACY_PRESENCE_KEY)
+        PresenceCache.keys = emptyMap()
+    }
+
+    private fun loadPresenceKeys(): Map<String, ByteArray> {
+        PresenceCache.keys?.let { return it }
+        synchronized(PresenceCache) {
+            PresenceCache.keys?.let { return it }
+            files.delete(LEGACY_PRESENCE_KEY) // one key for every PC: replaced by per-PC keys (each PC resends its key)
+            val loaded = files.read(PRESENCE_KEYS)?.let { bytes ->
+                runCatching {
+                    val json = JSONObject(String(bytes))
+                    json.keys().asSequence().associateWith { android.util.Base64.decode(json.getString(it), android.util.Base64.NO_WRAP) }
+                }.getOrNull()
+            }.orEmpty()
+            PresenceCache.keys = loaded
+            return loaded
+        }
+    }
+
+    /** Process-wide: every AppStorage instance shares the same decrypted keys. */
+    private object PresenceCache {
+        @Volatile
+        var keys: Map<String, ByteArray>? = null
+    }
 
     private companion object {
-        const val PRESENCE_KEY = "presence.key.enc"
+        const val LEGACY_PRESENCE_KEY = "presence.key.enc"
+        const val PRESENCE_KEYS = "presence.keys.enc"
         const val IDENTITY = "identity.p12.enc"
         const val DEVICES = "devices.json.enc"
 

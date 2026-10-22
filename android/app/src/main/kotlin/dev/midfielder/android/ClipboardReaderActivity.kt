@@ -27,17 +27,26 @@ class ClipboardReaderActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus || done) return
+        val force = intent.getBooleanExtra(EXTRA_FORCE, false)
         val engine = SyncEngine.current
-        if (engine != null) {
-            val content = runCatching { ClipboardBridge(this).read() }
-                .onFailure { EventLog.error("Reading the clipboard failed", it) }
-                .getOrNull()
-            if (content != null) {
-                val result = engine.onLocalClipboard(content, force = intent.getBooleanExtra(EXTRA_FORCE, false))
-                if (intent.getBooleanExtra(EXTRA_FORCE, false)) Toast.makeText(this, result, Toast.LENGTH_SHORT).show()
-            } else EventLog.add("Clipboard is empty or unreadable")
-        } else {
-            SyncService.start(this)
+        // Take only what's on the clipboard here (cheap), then let go of focus at once: an image is decoded
+        // later, off this window, so the user's keyboard and the app underneath are never held up.
+        val grab = runCatching { ClipboardBridge(this).grab(force) }
+            .onFailure { EventLog.error("Reading the clipboard failed", it) }
+            .getOrNull()
+        val app = applicationContext
+        when {
+            engine == null -> {
+                SyncService.start(this)
+                if (force) Toast.makeText(app, "Midfielder is starting. Try again in a moment.", Toast.LENGTH_SHORT).show()
+            }
+            grab == null -> {
+                EventLog.add("Clipboard is empty, unchanged or unreadable")
+                if (force) Toast.makeText(app, "The clipboard is empty", Toast.LENGTH_SHORT).show()
+            }
+            else -> engine.onClipboardGrab(grab, force) { result ->
+                if (force) Toast.makeText(app, result, Toast.LENGTH_SHORT).show()
+            }
         }
         finishQuietly()
     }
