@@ -169,6 +169,10 @@
             android:name=".PcAudioStopReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".TransferCancelReceiver"
+            android:exported="false" />
+
         <!-- Auto-lock: renews the Bluetooth token at each 15-minute slot, also in Doze. -->
         <receiver
             android:name=".PresenceRotateReceiver"

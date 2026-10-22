@@ -17,3 +17,26 @@ Wi-Fi.
 
 **Not covered:** a compromised device that is already paired, and someone with your unlocked PC or phone.
 Unpair from either side to revoke ("Forget paired devices" / "Forget paired PC").
+
+## Android permissions and distribution
+
+Midfielder is installed from its APK, not a store. Some optional features use permissions that Google Play
+restricts to default phone/SMS apps or that need a declaration form there:
+
+- `READ_CALL_LOG` (caller number for "Calls on PC") and `SEND_SMS` (the quick text reply).
+- `READ_LOGS` is never requested by the app; the user grants it once over ADB for automatic copy detection.
+- Notification access and Accessibility are user-granted special accesses. On Android 13+ a sideloaded app
+  has to be allowed "restricted settings" in App info before they can be turned on; the app explains this
+  where it asks.
+
+Every one of these sits behind a feature switch that is off by default, and nothing is requested until that
+switch is turned on. A Play build would drop the call-log and SMS parts of the Calls feature (keeping answer
+and decline) or ship them only through a declared exception.
+
+Other hardening on Android:
+- The share target accepts only `content://` URIs from other apps (no `file://`, none of Midfielder's own
+  providers).
+- Pairing links must point at private, link-local or loopback addresses; anything else gets a stronger warning.
+- Knock packets are accepted only from local-network addresses and only ever trigger a dial, which the TLS
+  pin still has to pass.
+- Logcat lines leave out file URIs and network addresses; the in-app Developer log keeps them.

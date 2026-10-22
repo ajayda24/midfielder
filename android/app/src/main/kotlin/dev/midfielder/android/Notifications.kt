@@ -22,6 +22,8 @@ class Notifications(context: Context) {
                 },
                 NotificationChannel(TRANSFERS, "File transfers", NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(EVENTS, "Received files", NotificationManager.IMPORTANCE_DEFAULT),
+                // Results of what you sent: quiet (you started it), but still in the shade.
+                NotificationChannel(SENT, "Sent files", NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(CLIPS, "Images copied from PC", NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(FIND, "Find my phone", NotificationManager.IMPORTANCE_HIGH).apply { setSound(null, null) },
                 NotificationChannel(ALERTS, "PC battery alerts", NotificationManager.IMPORTANCE_DEFAULT),
@@ -71,12 +73,28 @@ class Notifications(context: Context) {
                 .setProgress(100, pct, false)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
+                .setContentIntent(
+                    PendingIntent.getActivity(
+                        app, 3, Intent(app, MainActivity::class.java).putExtra(MainActivity.EXTRA_TAB, MainActivity.TAB_HOME),
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                    ),
+                )
+                .addAction(
+                    Notification.Action.Builder(
+                        null, "Cancel",
+                        PendingIntent.getBroadcast(
+                            app, transferId.hashCode(),
+                            Intent(app, TransferCancelReceiver::class.java).putExtra(TransferCancelReceiver.EXTRA_ID, transferId),
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                        ),
+                    ).build(),
+                )
                 .build(),
         )
     }
 
     /** A finished transfer. Tapping opens the file ([openRecordId]) or the Files tab. */
-    fun finished(transferId: String, title: String, text: String, openRecordId: String? = null) {
+    fun finished(transferId: String, title: String, text: String, openRecordId: String? = null, sent: Boolean = false) {
         nm.cancel(transferId.hashCode())
         val intent = Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra(MainActivity.EXTRA_TAB, MainActivity.TAB_FILES)
@@ -86,7 +104,7 @@ class Notifications(context: Context) {
         )
         nm.notify(
             transferId.hashCode(),
-            Notification.Builder(app, EVENTS)
+            Notification.Builder(app, if (sent) SENT else EVENTS)
                 .setSmallIcon(R.drawable.ic_stat)
                 .setColor(ACCENT)
                 .setContentTitle(title)
@@ -236,6 +254,7 @@ class Notifications(context: Context) {
         private const val STATUS = "status"
         private const val TRANSFERS = "transfers"
         private const val EVENTS = "events"
+        private const val SENT = "sent"
         private const val CLIPS = "clips"
         private const val FIND = "find"
         private const val ALERTS = "alerts"
@@ -249,5 +268,18 @@ class Notifications(context: Context) {
         private const val CLIP_IMAGE_ID = 2
         private const val CLIP_IMAGE_TIMEOUT_MS = 2 * 60_000L
         private const val ACCENT = 0xFF1F6F5C.toInt()
+    }
+}
+
+/** "Cancel" on a transfer's progress notification. */
+class TransferCancelReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val id = intent.getStringExtra(EXTRA_ID) ?: return
+        val engine = SyncEngine.current
+        if (engine != null) engine.cancelTransfer(id) else Notifications(context).cancel(id)
+    }
+
+    companion object {
+        const val EXTRA_ID = "id"
     }
 }

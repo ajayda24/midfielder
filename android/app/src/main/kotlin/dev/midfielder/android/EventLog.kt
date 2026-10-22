@@ -25,15 +25,25 @@ object EventLog {
     fun add(message: String) = append(message, isError = false)
 
     fun error(message: String, e: Throwable) {
-        Log.w(TAG, message, e)
+        Log.w(TAG, redact(message), e)
         append("$message: ${e.javaClass.simpleName}: ${e.message}", isError = true)
     }
 
     @Synchronized
     private fun append(message: String, isError: Boolean) {
-        if (!isError) Log.i(TAG, message)
+        if (!isError) Log.i(TAG, redact(message))
         _entries.value = (listOf(Entry(time.format(Date()), message, isError)) + _entries.value).take(MAX)
     }
+
+    private val uri = Regex("""(content|file)://\S+""")
+    private val ipv4 = Regex("""\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b""")
+    private val ipv6 = Regex("""\[?\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{0,4}){2,7}(%\w+)?\]?(:\d+)?""")
+
+    /**
+     * Logcat is readable by other tools (and bug reports): leave out which files and addresses were involved.
+     * The in-app log keeps them, for the Developer tab.
+     */
+    private fun redact(s: String): String = s.replace(uri, "$1://…").replace(ipv6, "<addr>").replace(ipv4, "<addr>")
 
     @Synchronized
     fun clear() {

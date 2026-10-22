@@ -442,7 +442,7 @@ class SyncEngine(context: Context) : Closeable {
         val w = WaitingSend(node.newTransferId(), sources, target, pcName)
         synchronized(waitingSends) { waitingSends += w }
         val what = titleOf(sources.map { it.name })
-        notifications.finished(w.id, "Waiting for $pcName", "$what will be sent when it connects. Is Midfielder open on the PC?")
+        notifications.finished(w.id, "Waiting for $pcName", "$what will be sent when it connects. Is Midfielder open on the PC?", sent = true)
         EventLog.add("PC not connected: ${sources.size} file(s) will be sent when it connects")
         scope.launch {
             delay(WAITING_SEND_MS)
@@ -457,7 +457,7 @@ class SyncEngine(context: Context) : Closeable {
                     )
                 },
             )
-            notifications.finished(w.id, "Not sent to $pcName", "It didn't connect in time. Share $what again once it's on.")
+            notifications.finished(w.id, "Not sent to $pcName", "It didn't connect in time. Share $what again once it's on.", sent = true)
             EventLog.add("Gave up sending ${sources.size} file(s): $pcName didn't connect")
         }
     }
@@ -490,8 +490,8 @@ class SyncEngine(context: Context) : Closeable {
         if (status == RecordStatus.DONE) history.recordFiles(Direction.SENT, sources.size, sources.sumOf { it.size })
         EventLog.add("Send ${sources.size} file(s) to ${target.name}: $status")
         when (result) {
-            is TransferResult.Completed -> notifications.finished(id, "Sent to ${target.name}", titleOf(sources.map { it.name }))
-            is TransferResult.Failed -> notifications.finished(id, "Not sent", result.reason)
+            is TransferResult.Completed -> notifications.finished(id, "Sent to ${target.name}", titleOf(sources.map { it.name }), sent = true)
+            is TransferResult.Failed -> notifications.finished(id, "Not sent to ${target.name}", result.reason, sent = true)
             TransferResult.Cancelled -> notifications.cancel(id)
         }
     }
@@ -588,7 +588,11 @@ class TransferLocks(context: Context) {
     /** Transfer [id] is moving bytes. Idempotent; each call renews the timeouts, so long transfers stay covered. */
     @Synchronized
     fun hold(id: String) {
-        holders += id
+        val added = holders.add(id)
+        val now = android.os.SystemClock.elapsedRealtime()
+        // Progress calls this many times a second: renew (a call into the system) only when needed.
+        if (!added && wake.isHeld && now - renewedAt < RENEW_MS) return
+        renewedAt = now
         runCatching {
             wake.acquire(MAX_HOLD_MS)
             if (!wifi.isHeld) wifi.acquire()
@@ -597,6 +601,8 @@ class TransferLocks(context: Context) {
         main.removeCallbacks(safety)
         main.postDelayed(safety, MAX_HOLD_MS)
     }
+
+    private var renewedAt = 0L
 
     /** Transfer [id] finished or paused. */
     @Synchronized
@@ -614,5 +620,6 @@ class TransferLocks(context: Context) {
 
     private companion object {
         const val MAX_HOLD_MS = 30 * 60_000L
+        const val RENEW_MS = 60_000L
     }
 }

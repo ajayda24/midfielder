@@ -208,7 +208,13 @@ class SettingsTab(host: MainActivity) : Tab(host) {
             Features.BATTERY, { storage.featBattery }) { storage.featBattery = it }
         option(battery, "PC battery alerts", "When the PC is charged or low", storage.batteryAlerts) { storage.batteryAlerts = it }
         // A label above short chips: label and chips in one row don't fit a narrow phone.
-        val chips = ui.horizontal().apply { setPadding(ui.dp(4), 0, 0, ui.dp(8)) }
+        // One choice, always one selected: TalkBack reads it as a group of options.
+        val chips = com.google.android.material.chip.ChipGroup(host).apply {
+            isSingleSelection = true
+            isSelectionRequired = true
+            chipSpacingHorizontal = ui.dp(8)
+            setPadding(ui.dp(4), 0, 0, ui.dp(8))
+        }
         conditional(battery, ui.supporting("Charged alert at").apply { setPadding(ui.dp(4), ui.dp(4), 0, ui.dp(4)) }) { storage.batteryAlerts }
         val levels = listOf(80, 90, 100).map { level ->
             ui.filterChip("$level%", storage.batteryFullAt == level).apply {
@@ -217,7 +223,10 @@ class SettingsTab(host: MainActivity) : Tab(host) {
                     SyncEngine.current?.features?.apply()
                     refresh()
                 }
-            }.also { chips.addView(it, ui.wrap(if (level == 80) 0 else 8)) }
+            }.also {
+                it.id = View.generateViewId()
+                chips.addView(it)
+            }
         }
         dynamic += { levels.forEachIndexed { i, chip -> chip.isChecked = storage.batteryFullAt == listOf(80, 90, 100)[i] } }
         conditional(battery, chips) { storage.batteryAlerts }

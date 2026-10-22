@@ -121,5 +121,43 @@ if [ -n "$DEBUG_APK" ]; then
   sleep 2
   adb exec-out screencap -p > "screens/android-$API-home-features.png"
   adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::debug build crashed with features on"; adb logcat -d -b crash; exit 1; }
+
+  echo "== Rotation keeps the tab (and doesn't crash)"
+  adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab settings > /dev/null
+  sleep 2
+  adb shell settings put system accelerometer_rotation 0
+  adb shell settings put system user_rotation 1
+  sleep 3
+  adb exec-out screencap -p > "screens/android-$API-settings-landscape.png"
+  adb shell uiautomator dump /sdcard/ui.xml > /dev/null && adb shell cat /sdcard/ui.xml > ui-rotated.xml
+  adb shell settings put system user_rotation 0
+  sleep 2
+  grep -q 'text="Sync"\|text="Features"\|text="Paired PC"' ui-rotated.xml \
+    || echo "::warning::after rotating, Settings didn't seem to be showing"
+  adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::crashed on rotation"; adb logcat -d -b crash; exit 1; }
+
+  echo "== Dark mode"
+  adb shell cmd uimode night yes
+  sleep 3
+  for tab in home files settings; do
+    adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab "$tab" > /dev/null
+    sleep 2
+    adb exec-out screencap -p > "screens/android-$API-dark-$tab.png"
+  done
+  adb shell cmd uimode night no
+  sleep 2
+  adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::crashed in dark mode"; adb logcat -d -b crash; exit 1; }
+
+  echo "== Large text (font scale 1.5)"
+  adb shell settings put system font_scale 1.5
+  sleep 3
+  for tab in home settings; do
+    adb shell am start -W -n dev.midfielder/dev.midfielder.android.MainActivity --es tab "$tab" > /dev/null
+    sleep 2
+    adb exec-out screencap -p > "screens/android-$API-bigtext-$tab.png"
+  done
+  adb shell settings put system font_scale 1.0
+  sleep 2
+  adb logcat -d -b crash | grep -q "dev.midfielder" && { echo "::error::crashed with large text"; adb logcat -d -b crash; exit 1; }
 fi
 echo "Smoke test passed"
