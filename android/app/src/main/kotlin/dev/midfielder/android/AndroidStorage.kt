@@ -21,6 +21,8 @@ class MediaStoreFileSink(context: Context, private val key: String, private val 
     private val resolver = context.applicationContext.contentResolver
 
     private fun uri(create: Boolean): Uri? = pending[key] ?: if (!create) null else {
+        // Cancelled while bytes were still arriving: don't bring the file back.
+        if (key in discarded) throw java.io.IOException("transfer cancelled")
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
             put(MediaStore.Downloads.MIME_TYPE, mime.ifEmpty { "application/octet-stream" })
@@ -60,12 +62,50 @@ class MediaStoreFileSink(context: Context, private val key: String, private val 
     }
 
     override fun discard() {
+        discarded += key
         pending.remove(key)?.let { runCatching { resolver.delete(it, null, null) } }
     }
 
     companion object {
         /** Partial entries by transfer key, so a resumed attempt finds the same file. */
         private val pending = ConcurrentHashMap<String, Uri>()
+
+        /** Keys whose transfer was cancelled or failed (keys are unique per transfer, so this only grows a little). */
+        private val discarded: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /**
+         * Deletes half-received files a previous run left behind (the app was killed mid-transfer: the resume
+         * state lived in memory, so nothing can finish them). Hidden from other apps, but they took space for a
+         * week until Android removed them. Ones from this run, or younger than [minAgeMs], are kept.
+         */
+        fun cleanStale(context: Context, minAgeMs: Long = 30 * 60_000L) {
+            val resolver = context.contentResolver
+            val ours = pending.values.toSet()
+            val cutoffSec = (System.currentTimeMillis() - minAgeMs) / 1000
+            val where = "${MediaStore.MediaColumns.IS_PENDING} = 1 AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DATE_ADDED} < ?"
+            val args = arrayOf(Environment.DIRECTORY_DOWNLOADS + "/Midfielder%", cutoffSec.toString())
+            val base = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val stale = ArrayList<Uri>()
+            runCatching {
+                val cursor = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                    resolver.query(
+                        base, arrayOf(MediaStore.MediaColumns._ID),
+                        android.os.Bundle().apply {
+                            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, where)
+                            putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                            putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                        },
+                        null,
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    resolver.query(MediaStore.setIncludePending(base), arrayOf(MediaStore.MediaColumns._ID), where, args, null)
+                }
+                cursor?.use { c -> while (c.moveToNext()) stale += android.content.ContentUris.withAppendedId(base, c.getLong(0)) }
+            }.onFailure { EventLog.error("Looking for unfinished downloads failed", it) }
+            val gone = stale.filter { it !in ours }.count { runCatching { resolver.delete(it, null, null) > 0 }.getOrDefault(false) }
+            if (gone > 0) EventLog.add("Removed $gone unfinished download(s) from an earlier run")
+        }
 
         /** The name MediaStore actually gave the file, or null if it is gone. */
         fun displayName(context: Context, uri: Uri): String? =

@@ -222,6 +222,7 @@ class SyncEngine(context: Context) : Closeable {
         connections.start()
         triggers.start()
         ShareShortcuts.update(app, storage.trustStore.all())
+        scope.launch(Dispatchers.IO) { MediaStoreFileSink.cleanStale(app) }
         refreshStatus("Started")
     }
 
